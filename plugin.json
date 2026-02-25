@@ -1,0 +1,86 @@
+{
+  "slug": "MorphWorx",
+  "name": "MorphWorx",
+  "version": "2.0.0",
+  "license": "GPL-3.0-or-later",
+  "brand": "MorphWorx",
+  "author": "MorphWorx",
+  "authorEmail": "",
+  "authorUrl": "",
+  "pluginUrl": "",
+  "manualUrl": "",
+  "sourceUrl": "",
+  "donateUrl": "",
+  "changelogUrl": "",
+  "modules": [
+    {
+      "slug": "Trigonomicon",
+      "name": "Trigonomicon",
+      "description": "Generative drum trigger pattern generator with IDM, breakcore, amen, and drill-inspired patterns",
+      "tags": [
+        "Drum",
+        "Sequencer",
+        "Random"
+      ]
+    },
+    {
+      "slug": "SlideWyrm",
+      "name": "SlideWyrm",
+      "description": "TB-303 style acid pattern generator with slide and accent",
+      "tags": [
+        "Sequencer",
+        "Random"
+      ]
+    },
+    {
+      "slug": "Septagon",
+      "name": "Septagon",
+      "description": "Generative polyrhythmic drum patterns in 7/4 with phase-space warping",
+      "tags": [
+        "Drum",
+        "Random",
+        "Sequencer",
+        "Clock modulator"
+      ]
+    },
+    {
+      "slug": "Minimalith",
+      "name": "Minimalith",
+      "description": "Minimal PreenFM2 FM synth engine - load banks, play patches, CV modulation",
+      "tags": [
+        "Synth",
+        "FM"
+      ]
+    },
+    {
+      "slug": "Amenolith",
+      "name": "Amenolith",
+      "description": "5-instrument multisample drum kit player with kits, velocity layers, roll, tune, length trim, and individual outs",
+      "tags": [
+        "Drum",
+        "Sampler"
+      ]
+    },
+    {
+      "slug": "Phaseon",
+      "name": "Phaseon",
+      "description": "FM + Wavetable monster voice — aggressive modern sounds with macro controls and CV performance layer",
+      "tags": [
+        "Synth",
+        "FM",
+        "Wavetable"
+      ]
+    },
+    {
+      "slug": "Xenostasis",
+      "name": "Xenostasis",
+      "description": "Autonomous hybrid synthesis organism — self-regulating spectral drone with wavetable + organic bytebeat cross-modulation and internal metabolism",
+      "tags": [
+        "Synth",
+        "Wavetable",
+        "Noise",
+        "Granular"
+      ]
+    }
+  ]
+}

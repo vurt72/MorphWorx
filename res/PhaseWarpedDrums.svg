@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="121.92mm" height="128.5mm" viewBox="0 0 121.92 128.5">
+  <!-- Panel background consistent with other Bemushroomed modules -->
+  <rect fill="#2a2b48" x="0" y="0" width="121.92" height="128.5" />
+  <rect fill="none" stroke="#a7ffc4" stroke-width="0.8" x="1.5" y="1.5" width="118.92" height="125.5" rx="3" />
+</svg>

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="101.6mm" height="128.5mm" viewBox="0 0 101.6 128.5">
+
+  <!-- Panel background: dark purple (matching Minimalith / Bemushroomed family) -->
+  <rect fill="#2a2b48" x="0" y="0" width="101.6" height="128.5" />
+  <rect fill="none" stroke="#a7ffc4" stroke-width="0.8" x="1.5" y="1.5" width="98.6" height="125.5" rx="3" />
+
+</svg>

@@ -1,0 +1,38 @@
+{
+    "MetaModuleBrandName": "MorphWorx",
+    "MetaModuleBrandSlug": "MorphWorx",
+    "MetaModuleBrandAliases": ["MorphWorx", "IDMT"],
+    "MetaModulePluginMaintainer": "MorphWorx",
+    "MetaModulePluginMaintainerEmail": "",
+    "MetaModuleDescription": "Generative drums, acid patterns, and PreenFM2 synth engine for MetaModule.",
+    "MetaModuleIncludedModules": [
+        {
+            "slug": "Trigonomicon",
+            "name": "Trigonomicon"
+        },
+        {
+            "slug": "SlideWyrm",
+            "name": "SlideWyrm"
+        },
+        {
+            "slug": "Septagon",
+            "name": "Septagon"
+        },
+        {
+            "slug": "Minimalith",
+            "name": "Minimalith"
+        },
+        {
+            "slug": "Amenolith",
+            "name": "Amenolith"
+        },
+        {
+            "slug": "Phaseon",
+            "name": "Phaseon"
+        },
+        {
+            "slug": "Xenostasis",
+            "name": "Xenostasis"
+        }
+    ]
+}
