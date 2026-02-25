@@ -1,44 +1,52 @@
-# Prerequisites
-*.d
+# ==============================
+# Build / Output
+# ==============================
+dist/
+build/
+metamodule/build/
+metamodule/metamodule-plugins/
 
-# Compiled Object files
-*.slo
-*.lo
+# ==============================
+# IDE / Editor
+# ==============================
+.vscode/
+.history/
+
+# ==============================
+# Temporary / Backup Files
+# ==============================
+*.bak
+*.tmp
+*.log
+
+# ==============================
+# Skills / External Tooling
+# ==============================
+skills/
+skills-lock.json
+
+# ==============================
+# Compiled / Binary Artifacts
+# ==============================
+*.d
 *.o
 *.obj
-
-# Precompiled Headers
+*.lo
+*.slo
+*.ilk
+*.pdb
 *.gch
 *.pch
-
-# Linker files
-*.ilk
-
-# Debugger Files
-*.pdb
-
-# Compiled Dynamic libraries
 *.so
 *.dylib
 *.dll
-
-# Fortran module files
 *.mod
 *.smod
-
-# Compiled Static libraries
 *.lai
 *.la
 *.a
 *.lib
-
-# Executables
 *.exe
 *.out
 *.app
-
-# debug information files
 *.dwo
-
-skills/
-skills-lock.json
