@@ -137,7 +137,7 @@ inline const char* modDestName(ModDest d) {
     case ModDest::MotionAmount:   return "Motion";
     case ModDest::ComplexAmount:  return "Complex";
     case ModDest::ChaosAmount:    return "Chaos";
-    case ModDest::SpikeIntensity: return "Spike";
+    case ModDest::SpikeIntensity: return "Punch";
     case ModDest::Instability:    return "Instab";
     case ModDest::MasterLevel:    return "Master";
     case ModDest::FramePos:       return "FramePos";
@@ -326,7 +326,7 @@ inline void applyModMatrix(PhaseonVoice& voice,
     applyGlobal(ModDest::MotionAmount,   voice.motionAmount,   0.0f, 1.0f);
     applyGlobal(ModDest::ComplexAmount,  voice.complexAmount,  0.0f, 1.0f);
     applyGlobal(ModDest::ChaosAmount,    voice.chaosAmount,    0.0f, 1.0f);
-    applyGlobal(ModDest::SpikeIntensity, voice.spike.intensity,0.0f, 1.0f);
+    applyGlobal(ModDest::SpikeIntensity, voice.spike.intensity,0.0f, 3.0f);
     applyGlobal(ModDest::Instability,    voice.instability,    0.0f, 1.0f);
     applyGlobal(ModDest::MasterLevel,    voice.masterLevel,    0.0f, 1.0f);
     applyGlobal(ModDest::FormantAmount,  voice.formantAmount,  0.0f, 1.0f);

@@ -600,7 +600,7 @@ struct PhaseonVoice {
             if (depthFactor < 0.0f) depthFactor = 0.0f;
             if (depthFactor > 3.0f) depthFactor = 3.0f;
 
-            // Transient spike: boost FM depth on note start
+            // PUNCH: boost FM depth on note start (modulators only; morph-aware)
             float effectiveFmDepth = op.fmDepth * depthFactor;
 
             // NETWORK also shapes FM depth (more profound than PM alone)
@@ -611,7 +611,15 @@ struct PhaseonVoice {
                 if (factor > 6.0f) factor = 6.0f;
                 effectiveFmDepth *= factor;
             }
-            effectiveFmDepth += effectiveFmDepth * spikeVal;
+            float punchW = 0.0f;
+            if (spikeVal > 0.0001f) {
+                float cA = algoA.isCarrier[i] ? 1.0f : 0.0f;
+                float cB = algoB.isCarrier[i] ? 1.0f : 0.0f;
+                float carrierW = cA + (cB - cA) * morph;
+                float modW = 1.0f - clamp01(carrierW);
+                punchW = modW;
+            }
+            effectiveFmDepth += effectiveFmDepth * (spikeVal * punchW);
             effectiveFmDepth += extraFm;
 
             // GrowlLoop: treat the operator envelope as an internal LFO that scales FM depth.
@@ -629,16 +637,10 @@ struct PhaseonVoice {
                 effectiveFmDepth *= (1.0f - loopW) + loopW * lfo;
             }
 
-            // Pitch lift on Impact roles (kick-like). Keep it tiny and musical.
+            // Impact roles (kick-like). Keep it tiny and musical.
             float opFundHz = fundamentalHz;
             if (impact > 0.001f) {
-                float lift = 0.0f;
-                // Up to ~+20% at full spike for Impact-ish roles.
-                lift = 0.20f * impact * spikeVal;
-                opFundHz *= (1.0f + lift);
-
-                // Phase nudge: inject a small constant PM offset (in modulation units)
-                phaseModAccum[i] += 0.40f * impact * spikeVal;
+                // (No longer driven by PUNCH; keep this block for future non-PUNCH impact behaviors.)
             }
 
             // Motion drives spectral wobble (liquid, not linear)
@@ -735,8 +737,22 @@ struct PhaseonVoice {
             op.wsMix    = origWsMix;
             op.wsDrive  = origWsDrive;
 
-            // Route this operator's output with interpolated routing weights
+            // Route this operator's output with interpolated routing weights.
+            // PUNCH injects a short extra modulation burst for modulators only.
             float modSignal = op.output * modEnv[i];
+            if (spikeVal > 0.0001f) {
+                float cA = algoA.isCarrier[i] ? 1.0f : 0.0f;
+                float cB = algoB.isCarrier[i] ? 1.0f : 0.0f;
+                float carrierW = cA + (cB - cA) * morph;
+                float modW = 1.0f - clamp01(carrierW);
+
+                float punchVal = spikeVal * modW;
+                // Convert to an additive transient modulation amount.
+                // This avoids "sometimes nothing" when modEnv starts near 0.
+                float extra = punchVal * 0.85f;
+                if (extra > 2.25f) extra = 2.25f;
+                modSignal += op.output * extra;
+            }
             float dmix = depthModMix;
             if (dmix < 0.0f) dmix = 0.0f;
             if (dmix > 1.0f) dmix = 1.0f;
@@ -782,6 +798,16 @@ struct PhaseonVoice {
         };
         sumL = softClipCarrier(sumL);
         sumR = softClipCarrier(sumR);
+
+        // PUNCH: add a short amplitude "thump" on note-on.
+        // This is intentionally independent of routing topology so the control stays consistent.
+        if (spikeVal > 0.0001f) {
+            // Smooth, bounded gain bump: ~0..+35% depending on PUNCH intensity.
+            float bump = tanhf(spikeVal * 0.85f) * 0.35f;
+            float g = 1.0f + bump;
+            sumL *= g;
+            sumR *= g;
+        }
 
         outL = sumL * envLevel * masterLevel;
         outR = sumR * envLevel * masterLevel;

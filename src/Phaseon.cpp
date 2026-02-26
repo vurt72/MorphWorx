@@ -67,6 +67,12 @@ struct Phaseon : Module {
         MOD_MUT_PARAM,
         MOD_AMT_PARAM,
         WARP_MODE_PARAM,
+
+        // Per-operator waveform editing
+        EDIT_OP_PARAM,
+        OP_WAVE_PARAM,
+
+        TAMING_PARAM,
         PARAMS_LEN
     };
     enum InputId {
@@ -286,6 +292,9 @@ struct Phaseon : Module {
         uint32_t seed = 0xC0FFEE11u;
         std::array<float, PARAMS_LEN> params{};
         std::string wtName;
+
+        // Per-operator waveform mode (0=WT, 1=Sine, 2=Triangle, 3=Saw, 4=Harmonic Sine, 5=Skewed Sine)
+        std::array<uint8_t, 6> opWaveMode{};
         bool used = false;
     };
     std::array<PresetSlot, kPresetSlots> bank;
@@ -294,6 +303,11 @@ struct Phaseon : Module {
     int bankFileVersionLoaded = 1;
     bool lastPresetPrev = false;
     bool lastPresetNext = false;
+
+    // Per-operator waveform mode (persisted via patch JSON + preset bank)
+    // 0=WT, 1=Sine, 2=Triangle, 3=Saw, 4=Harmonic Sine, 5=Skewed Sine
+    std::array<uint8_t, 6> opWaveMode{};
+    int lastEditOp = 0;
 
     static inline float clamp01(float x) {
         if (x < 0.0f) return 0.0f;
@@ -611,20 +625,21 @@ struct Phaseon : Module {
         if (fam > 2) fam = 2;
 
         // Built-in table indices (see PhaseonWavetable.cpp generation order)
-        constexpr int WT_SINE     = 0;
-        constexpr int WT_SAW      = 1;
-        constexpr int WT_SQUARE   = 2;
-        constexpr int WT_TRI      = 3;
-        constexpr int WT_FORMANT  = 4;
-        constexpr int WT_HARSH    = 5;
-        constexpr int WT_NOISE    = 6;
-        constexpr int WT_SUBBASS  = 7;
-        constexpr int WT_VOWELS   = 8;
-        constexpr int WT_SHIFT    = 9;
-        constexpr int WT_HYBRID   = 10;
+        // Curated compact set:
+        // 0 Saw, 1 Formant, 2 Harsh, 3 FMStack, 4 ImpactPulse,
+        // 5 FeralMachine, 6 AbyssalAlloy, 7 Substrate, 8 SubmergedMonolith,
+        // 9 HarshNoise, 10 ArcadeFX
+        constexpr int WT_SAW       = 0;
+        constexpr int WT_FORMANT   = 1;
+        constexpr int WT_HARSH     = 2;
+        constexpr int WT_FMSTACK   = 3;
+        constexpr int WT_IMPACT    = 4;
+        constexpr int WT_FERAL     = 5;
+        constexpr int WT_SUBSTRATE = 7;
 
         if (fam == 0) {
-            const int classicBuiltins[7] = { WT_SINE, WT_TRI, WT_SAW, WT_SQUARE, WT_SUBBASS, WT_HARSH, WT_NOISE };
+            // Old "Classic" family had many basic shapes. Map that intent onto the curated set.
+            const int classicBuiltins[] = { WT_SAW, WT_FMSTACK, WT_IMPACT, WT_HARSH };
             constexpr int nClassicBuiltins = (int)(sizeof(classicBuiltins) / sizeof(classicBuiltins[0]));
 
             int userCount = std::max(0, numTables - builtinCount);
@@ -646,13 +661,15 @@ struct Phaseon : Module {
         }
 
         if (fam == 1) {
-            bool hasNew = (builtinCount > WT_SHIFT);
-            int vowels = hasNew ? WT_VOWELS : WT_FORMANT;
-            return clampTableIndex(vowels, numTables);
+            return clampTableIndex(WT_FORMANT, numTables);
         }
 
-        bool hasNew = (builtinCount > WT_HYBRID);
-        int h = hasNew ? WT_HYBRID : WT_NOISE;
+        // Old "Hybrid" family mapped to spectral/noise hybrids.
+        // Use a musically useful proxy: FMStack -> Substrate -> FeralMachine as Edge rises.
+        int h;
+        if (e < 0.33f) h = WT_FMSTACK;
+        else if (e < 0.66f) h = WT_SUBSTRATE;
+        else h = WT_FERAL;
         return clampTableIndex(h, numTables);
     }
 
@@ -766,6 +783,21 @@ struct Phaseon : Module {
                     }
                 }
             }
+
+            // Per-operator waveform mode (introduced in bank version 3)
+            json_t* owJ = json_object_get(slotJ, "opWaveMode");
+            if (owJ && json_is_array(owJ)) {
+                int on = (int)json_array_size(owJ);
+                for (int oi = 0; oi < 6 && oi < on; ++oi) {
+                    json_t* vJ = json_array_get(owJ, oi);
+                    if (!vJ || !json_is_integer(vJ))
+                        continue;
+                    int v = (int)json_integer_value(vJ);
+                    if (v < 0) v = 0;
+                    if (v > 5) v = 5;
+                    s.opWaveMode[oi] = (uint8_t)v;
+                }
+            }
         }
 
         json_decref(root);
@@ -776,7 +808,7 @@ struct Phaseon : Module {
     bool bankSave() {
         json_t* root = json_object();
         json_object_set_new(root, "format", json_string("MorphWorx.PhaseonBank"));
-        json_object_set_new(root, "version", json_integer(2));
+        json_object_set_new(root, "version", json_integer(3));
 
         json_t* slotsJ = json_array();
         for (int i = 0; i < kPresetSlots; ++i) {
@@ -792,6 +824,15 @@ struct Phaseon : Module {
 
             if (!s.wtName.empty()) {
                 json_object_set_new(slotJ, "wtName", json_string(s.wtName.c_str()));
+            }
+
+            // Per-operator waveform mode
+            {
+                json_t* owJ = json_array();
+                for (int oi = 0; oi < 6; ++oi) {
+                    json_array_append_new(owJ, json_integer((int)s.opWaveMode[oi]));
+                }
+                json_object_set_new(slotJ, "opWaveMode", owJ);
             }
 
             json_t* paramsJ = json_array();
@@ -849,6 +890,10 @@ struct Phaseon : Module {
         }
 
         s.wtName = currentSelectedWtName();
+
+        for (int oi = 0; oi < 6; ++oi) {
+            s.opWaveMode[oi] = opWaveMode[oi];
+        }
         updatePresetDisplayName();
     }
 
@@ -922,6 +967,15 @@ struct Phaseon : Module {
                 params[WT_SELECT_PARAM].setValue((float)legacyIdx);
             }
 
+            // Restore per-operator waveform modes (available since bank version 3)
+            for (int oi = 0; oi < 6; ++oi) {
+                opWaveMode[oi] = s.opWaveMode[oi];
+            }
+
+            // Force UI resync so OP_WAVE_PARAM reflects the selected operator's stored mode.
+            // Without this, the just-loaded OP_WAVE_PARAM value can overwrite opWaveMode.
+            lastEditOp = -1;
+
             params[PANIC_PARAM].setValue(0.0f);
             params[ROLE_SHUFFLE_PARAM].setValue(0.0f);
             params[PRESET_PREV_PARAM].setValue(0.0f);
@@ -964,7 +1018,7 @@ struct Phaseon : Module {
         configParam(ENV_STYLE_PARAM,    0.f, 1.f, 0.0f,  "Env Style (Scene Morph)");
         paramQuantities[ENV_STYLE_PARAM]->displayMultiplier = 4.0f;
         configParam(ENV_SPREAD_PARAM,   0.f, 1.f, 1.0f,  "Env Spread");
-        configParam(SPIKE_PARAM,        0.f, 1.f, 0.0f,  "Spike (Transient Punch)");
+        configParam(SPIKE_PARAM,        0.f, 1.f, 0.0f,  "Punch (FM Click)");
         configButton(ROLE_SHUFFLE_PARAM, "Role Shuffle");
 
         configParam(TAIL_PARAM,         0.f, 1.f, 0.73f, "Tail (Release Length)");
@@ -977,7 +1031,10 @@ struct Phaseon : Module {
 
         // Explicit wavetable selector (snapped index into the loaded wavetable bank)
         // Stored by name in the PhaseonBank for VCV â†” MetaModule portability.
-        configParam(WT_SELECT_PARAM,    0.f, 127.f, 0.f,  "WT Select");
+        // Keep the selection range tight so the knob acts like a selector,
+        // not a "volume" that clamps to the last table.
+        // Current built-in bank indices are 0..10 (see PhaseonWavetable.cpp).
+        configParam(WT_SELECT_PARAM,    0.f, 10.f, 0.f,  "WT Select");
         paramQuantities[WT_SELECT_PARAM]->snapEnabled = true;
 
         // SCRAMBLE: per-operator envelope diversity
@@ -988,6 +1045,15 @@ struct Phaseon : Module {
         // COMPLEX controls warp depth; this selects the warp shape.
         configParam(WARP_MODE_PARAM,    0.f, 5.f, 0.f,    "Warp Mode");
         paramQuantities[WARP_MODE_PARAM]->snapEnabled = true;
+
+        // Per-operator waveform editing
+        configParam(EDIT_OP_PARAM, 1.f, 6.f, 1.f, "Edit Operator");
+        paramQuantities[EDIT_OP_PARAM]->snapEnabled = true;
+        configParam(OP_WAVE_PARAM, 0.f, 5.f, 0.f, "Operator Waveform");
+        paramQuantities[OP_WAVE_PARAM]->snapEnabled = true;
+
+        // TAME: global softener for harshness/clipping
+        configParam(TAMING_PARAM, 0.f, 1.f, 0.f, "Tame");
 
         // Mod matrix amount knobs (bipolar; source/dest/target/slew set via right-click menu)
         configParam(MOD1_AMT_PARAM,    -1.f, 1.f, 0.f, "Mod 1 Amount");
@@ -1272,6 +1338,28 @@ struct Phaseon : Module {
             macros.scramble    = params[SCRAMBLE_PARAM].getValue();
             macros.warpMode    = (int)(params[WARP_MODE_PARAM].getValue() + 0.5f);
 
+            macros.tame        = params[TAMING_PARAM].getValue();
+
+            // Per-operator waveform editing sync: EDIT_OP selects which operator the OP_WAVE knob edits.
+            int editOp = (int)(params[EDIT_OP_PARAM].getValue() + 0.5f) - 1;
+            if (editOp < 0) editOp = 0;
+            if (editOp > 5) editOp = 5;
+
+            if (editOp != lastEditOp) {
+                // Update knob to reflect stored mode for the newly selected operator.
+                params[OP_WAVE_PARAM].setValue((float)opWaveMode[editOp]);
+                lastEditOp = editOp;
+            }
+
+            int mode = (int)(params[OP_WAVE_PARAM].getValue() + 0.5f);
+            if (mode < 0) mode = 0;
+            if (mode > 5) mode = 5;
+            opWaveMode[editOp] = (uint8_t)mode;
+
+            for (int oi = 0; oi < 6; ++oi) {
+                macros.opWaveMode[oi] = opWaveMode[oi];
+            }
+
             // CV inputs (bipolar = /5V, unipolar = /10V)
             macros.cvHarmonicDensity = inputs[HARM_DENSITY_CV].getVoltage() / 5.0f;
             macros.cvWtSelect        = clamp(inputs[WT_SELECT_CV].getVoltage() / 10.0f, 0.0f, 1.0f);
@@ -1355,6 +1443,15 @@ struct Phaseon : Module {
         }
         json_object_set_new(rootJ, "modMatrix", mmJ);
 
+        // Per-operator waveform modes (patch persistence)
+        {
+            json_t* owJ = json_array();
+            for (int oi = 0; oi < 6; ++oi) {
+                json_array_append_new(owJ, json_integer((int)opWaveMode[oi]));
+            }
+            json_object_set_new(rootJ, "opWaveMode", owJ);
+        }
+
         return rootJ;
     }
 
@@ -1405,6 +1502,24 @@ struct Phaseon : Module {
                     s.slewMs = std::max(0.0f, std::min(500.0f, (float)json_number_value(slewJ)));
             }
         }
+
+        // Per-operator waveform modes
+        json_t* owJ = json_object_get(rootJ, "opWaveMode");
+        if (owJ && json_is_array(owJ)) {
+            int n = (int)json_array_size(owJ);
+            for (int oi = 0; oi < 6 && oi < n; ++oi) {
+                json_t* vJ = json_array_get(owJ, oi);
+                if (!vJ || !json_is_integer(vJ))
+                    continue;
+                int v = (int)json_integer_value(vJ);
+                if (v < 0) v = 0;
+                if (v > 5) v = 5;
+                opWaveMode[oi] = (uint8_t)v;
+            }
+        }
+
+        // Force UI resync on next control-rate tick.
+        lastEditOp = -1;
     }
 
 #ifdef METAMODULE
@@ -1604,33 +1719,28 @@ struct PhaseonWidget : ModuleWidget {
         // â”€â”€ Panel layout: 20 HP = 101.6mm â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         // Minimalith neon green labels: nvgRGB(167, 255, 196)
         const NVGcolor labelColor  = nvgRGB(167, 255, 196);
-        const NVGcolor accentColor = nvgRGB(255, 140, 100);
 
         // Move all text down by 4px
         // Global label text shift (user request: move all knob text down 3px)
         const Vec textShiftPx = Vec(0.0f, 7.0f);
-        // CV label text should be slightly higher than knob labels
-        const Vec cvTextShiftPx = textShiftPx.plus(Vec(0.0f, -2.0f));
 
         const float panelW = 101.6f;
         const float centerX = panelW * 0.5f;   // 50.8
 
-        // Global panel columns (used by CV + I/O sections)
-        const float col1 = 16.0f;
-        const float col2 = centerX;
-        const float col3 = panelW - 16.0f;     // 85.6
+        // â”€â”€ Label colours (row-based, matches panel "sections") â”€â”€
+        // Row 1 (WT SEL .. DENSITY): GREEN
+        // Row 2 (FM CHAR .. PUNCH): RED
+        // Row 3 (MOTION .. DRIFT):  BLUE
+        // Row 4 (ENV .. SCRAMBLE):  YELLOW
+        // Row 5 (EDIT OP .. TAME):  CYAN
+        const NVGcolor cRowGreen  = nvgRGB(180, 255, 140);
+        const NVGcolor cRowRed    = nvgRGB(255,  60,  60);
+        const NVGcolor cRowBlue   = nvgRGB(120, 180, 255);
+        const NVGcolor cRowYellow = nvgRGB(255, 210,  60);
+        const NVGcolor cRowCyan   = nvgRGB( 80, 255, 255);
 
-        // â”€â”€ Semantic colour palette: knob label colour == its paired CV label colour â”€â”€
-        const NVGcolor cTimbre  = nvgRGB(255, 210,  60);  // amber  â€” TIMBRE
-        const NVGcolor cDensity = nvgRGB( 80, 220, 200);  // teal   â€” DENSITY / H.DENS
-        const NVGcolor cEdge    = nvgRGB(255,  60,  60);  // red    â€” EDGE
-        const NVGcolor cMotion  = nvgRGB(120, 180, 255);  // blue   â€” MOTION
-        const NVGcolor cMorph   = nvgRGB(200, 130, 255);  // violet â€” MORPH
-        const NVGcolor cComplex = nvgRGB(255, 160, 200);  // pink   â€” COMPLEX / CMPLX
-        const NVGcolor cSpread  = nvgRGB(140, 255, 220);  // mint   â€” SPREAD / ENV.SPD
-        const NVGcolor cWt      = nvgRGB(180, 255, 140);  // green  â€” WT knobs + WT CVs
-        const NVGcolor cTilt    = nvgRGB(200, 180, 255);  // lavend â€” TILT CV
-        const NVGcolor cModKnob = nvgRGB(255, 255, 255);  // white  â€” M1â€“M6 labels
+        const NVGcolor cTilt    = nvgRGB(200, 180, 255);  // lavender â€” TILT CV
+        const NVGcolor cModKnob = nvgRGB(255, 255, 255);  // white â€” M1â€“M6 + MTRX AMT labels
 
         // Black macro knobs: tight left block, 11 mm pitch, 4 columns
         const float mcol1    =  9.0f;
@@ -1644,7 +1754,8 @@ struct PhaseonWidget : ModuleWidget {
         {
             struct PhaseonMMDisplay : MetaModule::VCVTextDisplay {};
             auto* mmDisplay = new PhaseonMMDisplay();
-            mmDisplay->box.pos = mm2px(Vec(10.0f, 16.0f));
+            // Faceplate screen window moved up; shift text up accordingly.
+            mmDisplay->box.pos = mm2px(Vec(10.0f, 16.0f)).plus(Vec(0.0f, -15.0f));
             mmDisplay->box.size = mm2px(Vec(panelW - 20.0f, 12.0f));
             mmDisplay->font = "Default_14";
             mmDisplay->color = Colors565::Green;
@@ -1655,7 +1766,8 @@ struct PhaseonWidget : ModuleWidget {
 #ifndef METAMODULE
     // Preset name text: draw over the faceplate (screen art is on the PNG).
     {
-        Vec dispPos = mm2px(Vec(6.0f, 17.0f)).plus(textShiftPx);
+        // Faceplate screen window moved up; shift text up accordingly.
+        Vec dispPos = mm2px(Vec(6.0f, 17.0f)).plus(textShiftPx).plus(Vec(0.0f, -15.0f));
         Vec dispSize = mm2px(Vec(panelW - 12.0f, 8.0f));
         // Shrink horizontally by 30%, keep centered.
         float fullW = dispSize.x;
@@ -1673,18 +1785,20 @@ struct PhaseonWidget : ModuleWidget {
             // Centered row under the screen, with a small 5px drop so nothing touches the border.
             const float btnY = 28.0f;
             const float btnDx = 10.0f;
-            const Vec presetBtnShiftPx = Vec(0.0f, 5.0f);
+            // Move buttons up by 15px (5px drop - 15px = -10px).
+            const Vec presetBtnShiftPx = Vec(0.0f, -11.0f);
 
             addParam(createParamCentered<TL1105>(mm2px(Vec(centerX - btnDx, btnY)).plus(textShiftPx).plus(presetBtnShiftPx), module, Phaseon::PRESET_PREV_PARAM));
             addParam(createParamCentered<TL1105>(mm2px(Vec(centerX, btnY)).plus(textShiftPx).plus(presetBtnShiftPx), module, Phaseon::PRESET_SAVE_PARAM));
             addParam(createParamCentered<TL1105>(mm2px(Vec(centerX + btnDx, btnY)).plus(textShiftPx).plus(presetBtnShiftPx), module, Phaseon::PRESET_NEXT_PARAM));
 
             const Vec bLabelSize = Vec(28.0f, 10.0f);
-            addChild(new PhaseonCenteredLabel(mm2px(Vec(centerX - btnDx, btnY + 5.0f)).plus(textShiftPx).plus(presetBtnShiftPx), bLabelSize, "<", 10.0f, labelColor));
-            addChild(new PhaseonCenteredLabel(mm2px(Vec(centerX + btnDx, btnY + 5.0f)).plus(textShiftPx).plus(presetBtnShiftPx), bLabelSize, ">", 10.0f, labelColor));
+            // Keep labeling consistent with the rest of the panel: text above the control.
+            addChild(new PhaseonCenteredLabel(mm2px(Vec(centerX - btnDx, btnY - 5.0f)).plus(textShiftPx).plus(presetBtnShiftPx).plus(Vec(0.f, 6.f)), bLabelSize, "<", 10.0f, labelColor));
+            addChild(new PhaseonCenteredLabel(mm2px(Vec(centerX + btnDx, btnY - 5.0f)).plus(textShiftPx).plus(presetBtnShiftPx).plus(Vec(0.f, 6.f)), bLabelSize, ">", 10.0f, labelColor));
 
             const Vec saveLabelSize = Vec(60.0f, 10.0f);
-            addChild(new PhaseonCenteredLabel(mm2px(Vec(centerX, btnY + 5.0f)).plus(textShiftPx).plus(presetBtnShiftPx), saveLabelSize, "SAVE", 7.0f, labelColor));
+            addChild(new PhaseonCenteredLabel(mm2px(Vec(centerX, btnY - 5.0f)).plus(textShiftPx).plus(presetBtnShiftPx).plus(Vec(0.f, 6.f)), saveLabelSize, "SAVE", 7.0f, labelColor));
         }
 
         // Headline/subtitle are now part of the faceplate art (Phaseon.png), so we don't draw them here.
@@ -1692,62 +1806,75 @@ struct PhaseonWidget : ModuleWidget {
 
         // â”€â”€ MACRO KNOBS (3 rows Ã— 3 columns) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         // Move the macro knobs down + right (closer to mod matrix block)
-        const Vec macroShiftPx = Vec(25.0f, 54.0f);
+        const Vec macroShiftPx = Vec(25.0f, 47.0f);
         float macroY = 30.0f;
         // Slightly more vertical spacing to avoid label overlap
-        float macroSpacing = 10.3f;
+        // Layout uses mm units (converted by mm2px). Add +3px per row for more breathing room.
+        // 1 HP = 5.08mm = 15px => mmPerPx = 5.08/15.
+        float macroSpacing = 10.3f + (4.0f * 5.08f / 15.0f);
 
-        // Row 1: TIMBRE / DENSITY / EDGE / TAIL
-        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(mcol1,    macroY)).plus(macroShiftPx), module, Phaseon::TIMBRE_PARAM));
-        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(mcol2,    macroY)).plus(macroShiftPx), module, Phaseon::DENSITY_PARAM));
+        // Row 1 (WT group): WT SEL / WT FRAME / EDGE / DENSITY
+        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(mcol1,    macroY)).plus(macroShiftPx), module, Phaseon::WT_SELECT_PARAM));
+        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(mcol2,    macroY)).plus(macroShiftPx), module, Phaseon::TIMBRE_PARAM));
         addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(mcol3,    macroY)).plus(macroShiftPx), module, Phaseon::EDGE_PARAM));
-        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(mcolTail, macroY)).plus(macroShiftPx), module, Phaseon::TAIL_PARAM));
+        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(mcolTail, macroY)).plus(macroShiftPx), module, Phaseon::DENSITY_PARAM));
 #ifndef METAMODULE
         const Vec labelSize = Vec(80.0f, 10.0f);
-        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcol1,    macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "WT FRAME", 6.5f, cTimbre));
-        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcol2,    macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "DENSITY", 7.0f, cDensity));
-        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcol3,    macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "EDGE",    7.0f, cEdge));
-        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcolTail, macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "TAIL",    7.0f, labelColor));
+        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcol1,    macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "WT SEL",  7.0f, cRowGreen));
+        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcol2,    macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "WT FRAME", 6.5f, cRowGreen));
+        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcol3,    macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "EDGE",    7.0f, cRowGreen));
+        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcolTail, macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "DENSITY", 7.0f, cRowGreen));
 #endif
 
-        // Row 2: FM CHARACTER / MOTION / ALGO / WT SET
+        // Row 2 (FM group): FM CHARACTER / ALGO / NET / PUNCH
         macroY += macroSpacing;
         addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(mcol1,    macroY)).plus(macroShiftPx), module, Phaseon::FM_CHARACTER_PARAM));
-        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(mcol2,    macroY)).plus(macroShiftPx), module, Phaseon::MOTION_PARAM));
-        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(mcol3,    macroY)).plus(macroShiftPx), module, Phaseon::ALGO_PARAM));
+        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(mcol2,    macroY)).plus(macroShiftPx), module, Phaseon::ALGO_PARAM));
+        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(mcol3,    macroY)).plus(macroShiftPx), module, Phaseon::NETWORK_PARAM));
+        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(mcolTail, macroY)).plus(macroShiftPx), module, Phaseon::SPIKE_PARAM));
+#ifndef METAMODULE
+        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcol1,    macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "FM CHAR", 7.0f, cRowRed));
+        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcol2,    macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "ALGO",    7.0f, cRowRed));
+        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcol3,    macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "NET",     7.0f, cRowRed));
+        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcolTail, macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "PUNCH",   7.0f, cRowRed));
+#endif
+
+        // Row 3: MOTION / MORPH / COMPLEX / DRIFT
+        macroY += macroSpacing;
+        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(mcol1,    macroY)).plus(macroShiftPx), module, Phaseon::MOTION_PARAM));
+        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(mcol2,    macroY)).plus(macroShiftPx), module, Phaseon::MORPH_PARAM));
+        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(mcol3,    macroY)).plus(macroShiftPx), module, Phaseon::COMPLEX_PARAM));
         addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(mcolTail, macroY)).plus(macroShiftPx), module, Phaseon::DRIFT_PARAM));
 #ifndef METAMODULE
-        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcol1,    macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "FM CHAR", 7.0f, accentColor));
-        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcol2,    macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "MOTION",  7.0f, cMotion));
-        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcol3,    macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "ALGO",    7.0f, labelColor));
-        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcolTail, macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "DRIFT",   7.0f, accentColor));
+        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcol1,    macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "MOTION",  7.0f, cRowBlue));
+        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcol2,    macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "MORPH",   7.0f, cRowBlue));
+        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcol3,    macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "COMPLEX", 7.0f, cRowBlue));
+        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcolTail, macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "DRIFT",   7.0f, cRowBlue));
 #endif
 
-        // Row 3: MORPH / COMPLEX / SPREAD / WT SEL
-        macroY += macroSpacing;
-        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(mcol1,    macroY)).plus(macroShiftPx), module, Phaseon::MORPH_PARAM));
-        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(mcol2,    macroY)).plus(macroShiftPx), module, Phaseon::COMPLEX_PARAM));
-        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(mcol3,    macroY)).plus(macroShiftPx), module, Phaseon::ENV_SPREAD_PARAM));
-        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(mcolTail, macroY)).plus(macroShiftPx), module, Phaseon::WT_SELECT_PARAM));
-#ifndef METAMODULE
-        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcol1,    macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "MORPH",   7.0f, cMorph));
-        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcol2,    macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "COMPLEX", 7.0f, cComplex));
-        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcol3,    macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "SPREAD",  7.0f, cSpread));
-        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcolTail, macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "WT SEL",  7.0f, cWt));
-#endif
-
-        // Row 4: ENV / BIAS / SCRAMBLE / NET
+        // Row 4: ENV / SPREAD / TAIL / SCRAMBLE
         macroY += macroSpacing;
         addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(mcol1,    macroY)).plus(macroShiftPx), module, Phaseon::ENV_STYLE_PARAM));
-        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(mcol2,    macroY)).plus(macroShiftPx), module, Phaseon::SPIKE_PARAM));
-        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(mcol3,    macroY)).plus(macroShiftPx), module, Phaseon::SCRAMBLE_PARAM));
-        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(mcolTail, macroY)).plus(macroShiftPx), module, Phaseon::NETWORK_PARAM));
+        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(mcol2,    macroY)).plus(macroShiftPx), module, Phaseon::ENV_SPREAD_PARAM));
+        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(mcol3,    macroY)).plus(macroShiftPx), module, Phaseon::TAIL_PARAM));
+        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(mcolTail, macroY)).plus(macroShiftPx), module, Phaseon::SCRAMBLE_PARAM));
 #ifndef METAMODULE
-        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcol1,    macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "ENV",      7.0f, labelColor));
-        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcol2,    macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "SPIKE",    7.0f, labelColor));
-        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcol3,    macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "SCRAMBLE", 6.5f, accentColor));
-        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcolTail, macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "NET",      7.0f, labelColor));
+        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcol1,    macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "ENV",      7.0f, cRowYellow));
+        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcol2,    macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "SPREAD",   7.0f, cRowYellow));
+        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcol3,    macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "TAIL",     7.0f, cRowYellow));
+        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcolTail, macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "SCRAMBLE", 6.5f, cRowYellow));
 #endif
+
+        // Row 5: EDIT OP / OP WAVE / TAME (aligned with macro grid)
+        macroY += macroSpacing;
+        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(mcol1,    macroY)).plus(macroShiftPx), module, Phaseon::EDIT_OP_PARAM));
+        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(mcol2,    macroY)).plus(macroShiftPx), module, Phaseon::OP_WAVE_PARAM));
+        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(mcol3,    macroY)).plus(macroShiftPx), module, Phaseon::TAMING_PARAM));
+    #ifndef METAMODULE
+        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcol1,    macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "EDIT OP",  6.5f, cRowCyan));
+        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcol2,    macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "OP WAVE",  6.5f, cRowCyan));
+        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcol3,    macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "TAME",     7.0f, cRowCyan));
+    #endif
 
         // â”€â”€ WHITE MOD MATRIX KNOBS (right block) + SHUFFLE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         // 3 columns Ã— 2 rows on the right half (55â€“89 mm), 17 mm pitch.
@@ -1764,8 +1891,7 @@ struct PhaseonWidget : ModuleWidget {
             const float wRowA = 30.0f;
             const float wRowB = 30.0f + macroSpacing * 1.0f;
             const float wRowC = 30.0f + macroSpacing * 2.0f;
-            const float wRowD = 30.0f + macroSpacing * 3.0f;
-            const NVGcolor cFormant = nvgRGB(255, 200, 100);      // warm gold
+            const float wRowE = 30.0f + macroSpacing * 4.0f;
             // Mod matrix block uses its own shift (15px left of macro block)
             const Vec modShiftPx = Vec(macroShiftPx.x - 21.0f, macroShiftPx.y);
 
@@ -1781,10 +1907,10 @@ struct PhaseonWidget : ModuleWidget {
             addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(wmcol1, wRowC)).plus(modShiftPx), module, Phaseon::MOD_AMT_PARAM));
             addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(wmcol2, wRowC)).plus(modShiftPx), module, Phaseon::FORMANT_PARAM));
             addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(wmcol3, wRowC)).plus(modShiftPx), module, Phaseon::WARP_MODE_PARAM));
-            // Row D: SHUFFLE, RND, MUT (buttons, evenly spaced)
-            addParam(createParamCentered<TL1105>(mm2px(Vec(wmcol1, wRowD + 2.f)).plus(modShiftPx), module, Phaseon::ROLE_SHUFFLE_PARAM));
-            addParam(createParamCentered<TL1105>(mm2px(Vec(wmcol2, wRowD + 2.f)).plus(modShiftPx), module, Phaseon::MOD_RND_PARAM));
-            addParam(createParamCentered<TL1105>(mm2px(Vec(wmcol3, wRowD + 2.f)).plus(modShiftPx), module, Phaseon::MOD_MUT_PARAM));
+            // Row E: SHUFFLE, RND, MUTATE (buttons, evenly spaced)
+            addParam(createParamCentered<TL1105>(mm2px(Vec(wmcol1, wRowE + 2.f)).plus(modShiftPx), module, Phaseon::ROLE_SHUFFLE_PARAM));
+            addParam(createParamCentered<TL1105>(mm2px(Vec(wmcol2, wRowE + 2.f)).plus(modShiftPx), module, Phaseon::MOD_RND_PARAM));
+            addParam(createParamCentered<TL1105>(mm2px(Vec(wmcol3, wRowE + 2.f)).plus(modShiftPx), module, Phaseon::MOD_MUT_PARAM));
 
 #ifndef METAMODULE
             const Vec wLabelSz = Vec(60.0f, 10.0f);
@@ -1798,12 +1924,12 @@ struct PhaseonWidget : ModuleWidget {
             addChild(new PhaseonCenteredLabel(mm2px(Vec(wmcol3, wRowB - 7.f)).plus(modShiftPx).plus(textShiftPx), wLabelSz, "M6", 6.5f, cModKnob));
             // Row C labels
             addChild(new PhaseonCenteredLabel(mm2px(Vec(wmcol1, wRowC - 7.f)).plus(modShiftPx).plus(textShiftPx), Vec(80.0f, 10.0f), "MTRX AMT", 6.0f, cModKnob));
-            addChild(new PhaseonCenteredLabel(mm2px(Vec(wmcol2, wRowC - 7.f)).plus(modShiftPx).plus(textShiftPx), wLabelSz, "FORM", 6.5f, cFormant));
-            addChild(new PhaseonCenteredLabel(mm2px(Vec(wmcol3, wRowC - 7.f)).plus(modShiftPx).plus(textShiftPx), wLabelSz, "WARP", 6.5f, cComplex));
-            // Row D labels
-            addChild(new PhaseonCenteredLabel(mm2px(Vec(wmcol1, wRowD - 5.f)).plus(modShiftPx).plus(textShiftPx), wLabelSz, "SHUFFLE", 6.5f, accentColor));
-            addChild(new PhaseonCenteredLabel(mm2px(Vec(wmcol2, wRowD - 5.f)).plus(modShiftPx).plus(textShiftPx), wLabelSz, "RND", 6.5f, accentColor));
-            addChild(new PhaseonCenteredLabel(mm2px(Vec(wmcol3, wRowD - 5.f)).plus(modShiftPx).plus(textShiftPx), wLabelSz, "MUT", 6.5f, accentColor));
+            addChild(new PhaseonCenteredLabel(mm2px(Vec(wmcol2, wRowC - 7.f)).plus(modShiftPx).plus(textShiftPx), wLabelSz, "FORM", 6.5f, cRowGreen));
+            addChild(new PhaseonCenteredLabel(mm2px(Vec(wmcol3, wRowC - 7.f)).plus(modShiftPx).plus(textShiftPx), wLabelSz, "WARP", 6.5f, cRowGreen));
+            // Row E labels
+                addChild(new PhaseonCenteredLabel(mm2px(Vec(wmcol1, wRowE - 5.f)).plus(modShiftPx).plus(textShiftPx).plus(Vec(0.f, 4.f)), wLabelSz, "SHUFFLE", 6.5f, cModKnob));
+                addChild(new PhaseonCenteredLabel(mm2px(Vec(wmcol2, wRowE - 5.f)).plus(modShiftPx).plus(textShiftPx).plus(Vec(0.f, 4.f)), wLabelSz, "RND", 6.5f, cModKnob));
+                addChild(new PhaseonCenteredLabel(mm2px(Vec(wmcol3, wRowE - 5.f)).plus(modShiftPx).plus(textShiftPx).plus(Vec(0.f, 4.f)), wLabelSz, "MUTATE", 5.5f, cModKnob));
 #endif
         }
 
@@ -1814,7 +1940,11 @@ struct PhaseonWidget : ModuleWidget {
             const float dx = (xR - xL) / 7.0f;
             const float row1Y = 92.0f;
             const float row2Y = 116.0f;
-			const Vec row1ShiftPx = Vec(0.f, 16.f);
+            // Panel layout tweak:
+            // - Upper row down slightly (tighten spacing above ports)
+            // - Lower row down by 15px
+            const Vec row1ShiftPx = Vec(0.f, 52.f);
+			const Vec row2ShiftPx = Vec(0.f, 15.f);
             const float portLabelDyPx = 19.f;
 
             auto xAt = [&](int i) { return xL + dx * (float)i; };
@@ -1833,40 +1963,41 @@ struct PhaseonWidget : ModuleWidget {
             addInput(createInputCentered<PhaseonPortWidget>(portPx(7, row1Y, row1ShiftPx), module, Phaseon::SPECTRAL_TILT_CV));
 
             // Row 2 (2 CV inputs + 4 bottom IO + 2 outputs on lower-right)
-            addInput(createInputCentered<PhaseonPortWidget>(portPx(0, row2Y, Vec()), module, Phaseon::MORPH_CV));
-            addInput(createInputCentered<PhaseonPortWidget>(portPx(1, row2Y, Vec()), module, Phaseon::MOTION_CV));
-            addInput(createInputCentered<PhaseonPortWidget>(portPx(2, row2Y, Vec()), module, Phaseon::FORMANT_CV));
-            addInput(createInputCentered<PhaseonPortWidget>(portPx(3, row2Y, Vec()), module, Phaseon::CLOCK_INPUT));
-            addInput(createInputCentered<PhaseonPortWidget>(portPx(4, row2Y, Vec()), module, Phaseon::GATE_INPUT));
-            addInput(createInputCentered<PhaseonPortWidget>(portPx(5, row2Y, Vec()), module, Phaseon::VOCT_INPUT));
-            addOutput(createOutputCentered<PhaseonPortWidget>(portPx(6, row2Y, Vec()), module, Phaseon::LEFT_OUTPUT));
-            addOutput(createOutputCentered<PhaseonPortWidget>(portPx(7, row2Y, Vec()), module, Phaseon::RIGHT_OUTPUT));
+            addInput(createInputCentered<PhaseonPortWidget>(portPx(0, row2Y, row2ShiftPx), module, Phaseon::MORPH_CV));
+            addInput(createInputCentered<PhaseonPortWidget>(portPx(1, row2Y, row2ShiftPx), module, Phaseon::MOTION_CV));
+            addInput(createInputCentered<PhaseonPortWidget>(portPx(2, row2Y, row2ShiftPx), module, Phaseon::FORMANT_CV));
+            addInput(createInputCentered<PhaseonPortWidget>(portPx(3, row2Y, row2ShiftPx), module, Phaseon::CLOCK_INPUT));
+            addInput(createInputCentered<PhaseonPortWidget>(portPx(4, row2Y, row2ShiftPx), module, Phaseon::GATE_INPUT));
+            addInput(createInputCentered<PhaseonPortWidget>(portPx(5, row2Y, row2ShiftPx), module, Phaseon::VOCT_INPUT));
+            addOutput(createOutputCentered<PhaseonPortWidget>(portPx(6, row2Y, row2ShiftPx), module, Phaseon::LEFT_OUTPUT));
+            addOutput(createOutputCentered<PhaseonPortWidget>(portPx(7, row2Y, row2ShiftPx), module, Phaseon::RIGHT_OUTPUT));
 
             // Gate light near GATE jack
-            addChild(createLightCentered<SmallLight<GreenLight>>(mm2px(Vec(xAt(4) + 5.f, row2Y - 5.f)), module, Phaseon::GATE_LIGHT));
+            addChild(createLightCentered<SmallLight<GreenLight>>(mm2px(Vec(xAt(4) + 5.f, row2Y - 5.f)).plus(row2ShiftPx), module, Phaseon::GATE_LIGHT));
 
     #ifndef METAMODULE
             const Vec cvLabelSize = Vec(70.0f, 10.0f);
             // Row 1 labels
-            addChild(new PhaseonCenteredLabel(portPx(0, row1Y, row1ShiftPx).plus(Vec(0.f, -portLabelDyPx)), cvLabelSize, "H.DENS",   6.5f, cDensity));
-            addChild(new PhaseonCenteredLabel(portPx(1, row1Y, row1ShiftPx).plus(Vec(0.f, -portLabelDyPx)), cvLabelSize, "ENV.SPD",  6.5f, cSpread));
-            addChild(new PhaseonCenteredLabel(portPx(2, row1Y, row1ShiftPx).plus(Vec(0.f, -portLabelDyPx)), cvLabelSize, "WT.SEL",   6.5f, cWt));
-            addChild(new PhaseonCenteredLabel(portPx(3, row1Y, row1ShiftPx).plus(Vec(0.f, -portLabelDyPx)), cvLabelSize, "EDGE",     6.5f, cEdge));
-            addChild(new PhaseonCenteredLabel(portPx(4, row1Y, row1ShiftPx).plus(Vec(0.f, -portLabelDyPx)), cvLabelSize, "WT FRAME", 6.0f, cTimbre));
-            addChild(new PhaseonCenteredLabel(portPx(5, row1Y, row1ShiftPx).plus(Vec(0.f, -portLabelDyPx)), cvLabelSize, "WT.RGN",   6.5f, cWt));
-            addChild(new PhaseonCenteredLabel(portPx(6, row1Y, row1ShiftPx).plus(Vec(0.f, -portLabelDyPx)), cvLabelSize, "CMPLX",    6.5f, cComplex));
-            addChild(new PhaseonCenteredLabel(portPx(7, row1Y, row1ShiftPx).plus(Vec(0.f, -portLabelDyPx)), cvLabelSize, "TILT",     6.5f, cTilt));
+            addChild(new PhaseonCenteredLabel(portPx(0, row1Y, row1ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), cvLabelSize, "H.DENS",   6.5f, cRowGreen));
+            addChild(new PhaseonCenteredLabel(portPx(1, row1Y, row1ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), cvLabelSize, "ENV.SPD",  6.5f, cRowYellow));
+            addChild(new PhaseonCenteredLabel(portPx(2, row1Y, row1ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), cvLabelSize, "WT.SEL",   6.5f, cRowGreen));
+            addChild(new PhaseonCenteredLabel(portPx(3, row1Y, row1ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), cvLabelSize, "EDGE",     6.5f, cRowGreen));
+            addChild(new PhaseonCenteredLabel(portPx(4, row1Y, row1ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), cvLabelSize, "WT FRAME", 6.0f, cRowGreen));
+            addChild(new PhaseonCenteredLabel(portPx(5, row1Y, row1ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), cvLabelSize, "WT.RGN",   6.5f, cRowGreen));
+            addChild(new PhaseonCenteredLabel(portPx(6, row1Y, row1ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), cvLabelSize, "CMPLX",    6.5f, cRowBlue));
+            addChild(new PhaseonCenteredLabel(portPx(7, row1Y, row1ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), cvLabelSize, "TILT",     6.5f, cTilt));
 
             const Vec ioLabelSize = Vec(60.0f, 10.0f);
             // Row 2 labels
-                addChild(new PhaseonCenteredLabel(portPx(0, row2Y, Vec()).plus(Vec(0.f, -portLabelDyPx)), cvLabelSize, "MORPH",  6.5f, cMorph));
-                addChild(new PhaseonCenteredLabel(portPx(1, row2Y, Vec()).plus(Vec(0.f, -portLabelDyPx)), cvLabelSize, "MOTION", 6.5f, cMotion));
-                addChild(new PhaseonCenteredLabel(portPx(2, row2Y, Vec()).plus(Vec(0.f, -portLabelDyPx)), ioLabelSize, "FORM",  7.0f, nvgRGB(255, 200, 100)));
-                addChild(new PhaseonCenteredLabel(portPx(3, row2Y, Vec()).plus(Vec(0.f, -portLabelDyPx)), ioLabelSize, "CLK",   7.0f, nvgRGB(200, 200, 255)));
-                addChild(new PhaseonCenteredLabel(portPx(4, row2Y, Vec()).plus(Vec(0.f, -portLabelDyPx)), ioLabelSize, "GATE",  7.0f, nvgRGB(100, 255, 100)));
-                addChild(new PhaseonCenteredLabel(portPx(5, row2Y, Vec()).plus(Vec(0.f, -portLabelDyPx)), ioLabelSize, "V/OCT", 7.0f, labelColor));
-                addChild(new PhaseonCenteredLabel(portPx(6, row2Y, Vec()).plus(Vec(0.f, -portLabelDyPx)), ioLabelSize, "L",     7.0f, labelColor));
-                addChild(new PhaseonCenteredLabel(portPx(7, row2Y, Vec()).plus(Vec(0.f, -portLabelDyPx)), ioLabelSize, "R",     7.0f, labelColor));
+                addChild(new PhaseonCenteredLabel(portPx(0, row2Y, row2ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), cvLabelSize, "MORPH",  6.5f, cRowBlue));
+                addChild(new PhaseonCenteredLabel(portPx(1, row2Y, row2ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), cvLabelSize, "MOTION", 6.5f, cRowBlue));
+                addChild(new PhaseonCenteredLabel(portPx(2, row2Y, row2ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), ioLabelSize, "FORM",  7.0f, cRowGreen));
+                const NVGcolor cIoGrey = nvgRGB(160, 160, 160);
+                addChild(new PhaseonCenteredLabel(portPx(3, row2Y, row2ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), ioLabelSize, "CLK",   7.0f, cIoGrey));
+                addChild(new PhaseonCenteredLabel(portPx(4, row2Y, row2ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), ioLabelSize, "GATE",  7.0f, cIoGrey));
+                addChild(new PhaseonCenteredLabel(portPx(5, row2Y, row2ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), ioLabelSize, "V/OCT", 7.0f, cIoGrey));
+                addChild(new PhaseonCenteredLabel(portPx(6, row2Y, row2ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), ioLabelSize, "L",     7.0f, cIoGrey));
+                addChild(new PhaseonCenteredLabel(portPx(7, row2Y, row2ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), ioLabelSize, "R",     7.0f, cIoGrey));
     #endif
         }
     }

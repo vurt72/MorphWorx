@@ -999,6 +999,9 @@ struct Xenostasis : Module {
         CROSS_CV_INPUT,
         VOCT_INPUT,
         TABLE_CV_INPUT,
+        DENSITY_CV_INPUT,
+        BBCHAR_CV_INPUT,
+        BBMODE_CV_INPUT,
         INPUTS_LEN
     };
     enum OutputId {
@@ -1222,6 +1225,9 @@ struct Xenostasis : Module {
         configInput(CROSS_CV_INPUT, "Cross CV (0-10V)");
         configInput(VOCT_INPUT, "V/Oct");
         configInput(TABLE_CV_INPUT, "Table CV (0-10V)");
+        configInput(DENSITY_CV_INPUT, "Density CV (0-10V)");
+        configInput(BBCHAR_CV_INPUT, "Bytebeat Character CV (0-10V)");
+        configInput(BBMODE_CV_INPUT, "Bytebeat Mode CV (0-10V)");
 
         configOutput(LEFT_OUTPUT, "Left Audio");
         configOutput(RIGHT_OUTPUT, "Right Audio");
@@ -1370,6 +1376,10 @@ struct Xenostasis : Module {
         float crossTotal = clamp(crossParam + crossCV, 0.f, 1.f);
 
         float densityParam = params[DENSITY_PARAM].getValue();
+        if (inputs[DENSITY_CV_INPUT].isConnected()) {
+            float densityCV = clamp(inputs[DENSITY_CV_INPUT].getVoltage() / 10.f, 0.f, 1.f);
+            densityParam = clamp(densityParam + densityCV, 0.f, 1.f);
+        }
         int tableIdx = (int)params[TABLE_PARAM].getValue();
         // Table CV: 0-10V maps across all tables
         if (inputs[TABLE_CV_INPUT].isConnected()) {
@@ -1379,10 +1389,19 @@ struct Xenostasis : Module {
 
         // Bytebeat character knob (0..1): controls shift amounts + morphing (timbre)
         float bbChar = params[BBCHAR_PARAM].getValue();
+        if (inputs[BBCHAR_CV_INPUT].isConnected()) {
+            float bbCharCV = clamp(inputs[BBCHAR_CV_INPUT].getVoltage() / 10.f, 0.f, 1.f);
+            bbChar = clamp(bbChar + bbCharCV, 0.f, 1.f);
+        }
         // Bytebeat volume: 0..200%
         float bbVol = params[BBVOL_PARAM].getValue();
         int bbMode = (int)params[BBMODE_PARAM].getValue();
         bbMode = clamp(bbMode, 0, 7);
+        // BB Mode CV: 0-10V maps across all 8 modes (CV overrides the knob)
+        if (inputs[BBMODE_CV_INPUT].isConnected()) {
+            float bbModeCv = clamp(inputs[BBMODE_CV_INPUT].getVoltage() / 10.f, 0.f, 1.f);
+            bbMode = clamp((int)(bbModeCv * (8.f - 0.001f)), 0, 7);
+        }
         // bbPitch read moved to control rate (cachedBbPitchMult)
 
         // Decay knob: 0 = ultra-short click (~5ms), 1 = medium length (~200ms)
@@ -2408,6 +2427,20 @@ struct XenostasisWidget : ModuleWidget {
     addInput(createInputCentered<MVXPort>(toCvIoPx(Vec(cv3X, row5Y)), module, Xenostasis::CHAOS_CV_INPUT));
     addInput(createInputCentered<MVXPort>(toCvIoPx(Vec(cv4X, row5Y)), module, Xenostasis::CROSS_CV_INPUT));
     addInput(createInputCentered<MVXPort>(toCvIoPx(Vec(cv5X, row5Y)), module, Xenostasis::TABLE_CV_INPUT));
+
+        // ──────────────────────────────
+        // Row 5b: Extra CV inputs (3 jacks) — placed above TRIG/CHAOS/CROSS
+        // ──────────────────────────────
+        float row5bY = row5Y - 12.f;
+        float cv6X = x2, cv7X = x3, cv8X = x4;
+#ifndef METAMODULE
+    addChild(xsCreateLabelPxYOffset(Vec(cv6X, row5bY - 5.f), (ioYOffsetPx - ioShiftUpPx) - 6.f + cvExtraYOffsetPx, "DENS", 6.5f, uiText));
+    addChild(xsCreateLabelPxYOffset(Vec(cv7X, row5bY - 5.f), (ioYOffsetPx - ioShiftUpPx) - 6.f + cvExtraYOffsetPx, "BB", 6.5f, uiText));
+    addChild(xsCreateLabelPxYOffset(Vec(cv8X, row5bY - 5.f), (ioYOffsetPx - ioShiftUpPx) - 6.f + cvExtraYOffsetPx, "MODE", 6.5f, uiText));
+#endif
+    addInput(createInputCentered<MVXPort>(toCvIoPx(Vec(cv6X, row5bY)), module, Xenostasis::DENSITY_CV_INPUT));
+    addInput(createInputCentered<MVXPort>(toCvIoPx(Vec(cv7X, row5bY)), module, Xenostasis::BBCHAR_CV_INPUT));
+    addInput(createInputCentered<MVXPort>(toCvIoPx(Vec(cv8X, row5bY)), module, Xenostasis::BBMODE_CV_INPUT));
 
         // ──────────────────────────────
         // Row 6 (bottom): Outputs

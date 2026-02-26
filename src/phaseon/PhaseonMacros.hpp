@@ -167,6 +167,9 @@ struct PhaseonMacroState {
     float envStyle    = 0.0f;   // 0..4 continuous
     float envSpread   = 1.0f;   // 0..1
 
+    // TAME: global softener for harshness/clipping (0=off, 1=max tame)
+    float tame        = 0.0f;
+
     // Spike (transient punch): 0..1, drives TransientSpike intensity + duration
     float spike       = 0.0f;
 
@@ -179,6 +182,10 @@ struct PhaseonMacroState {
 
     // Explicit wavetable selector (table index in the loaded bank)
     int   wtSelect    = 0;
+
+    // Per-operator waveform mode (0=WT, 1=Sine, 2=Triangle, 3=Saw, 4=Harmonic Sine, 5=Skewed Sine)
+    // Stored/owned by the module/preset system; applied here at control-rate.
+    uint8_t opWaveMode[PhaseonVoice::kNumOps] = { 0, 0, 0, 0, 0, 0 };
 
     // SCRAMBLE: per-operator envelope diversity (0 = uniform, 1 = wildly different)
     float scramble    = 0.0f;
@@ -210,6 +217,8 @@ struct PhaseonMacroState {
 inline void applyMacros(PhaseonVoice& voice, const PhaseonMacroState& m,
                         const WavetableBank& bank, float sampleRate = 44100.0f) {
     const int numTables = bank.count();
+
+    const float tame = std::max(0.0f, std::min(1.0f, m.tame));
 
     // â”€â”€ FM Character â†’ ratio set + algorithm â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Maps 0..1 to ratio sets 0..N-1, snapping to curated sets
@@ -255,6 +264,11 @@ inline void applyMacros(PhaseonVoice& voice, const PhaseonMacroState& m,
         // Gentle waveshaping mix and base drive (kept conservative for pads)
         voice.ops[i].wsMix   = std::max(0.0f, std::min(1.0f, cx * 0.55f * spread * carrierScale));
         voice.ops[i].wsDrive = 1.0f + cx * (algo.isCarrier[i] ? 1.0f : 1.6f);
+
+        // TAME reduces distortion contributors even when COMPLEX/EDGE are high.
+        voice.ops[i].pdAmount *= (1.0f - 0.60f * tame);
+        voice.ops[i].wsMix    *= (1.0f - 0.70f * tame);
+        voice.ops[i].wsDrive   = 1.0f + (voice.ops[i].wsDrive - 1.0f) * (1.0f - 0.75f * tame);
     }
 
     // 2nd-order depth modulation: keep it musical and pad-safe.
@@ -345,19 +359,59 @@ inline void applyMacros(PhaseonVoice& voice, const PhaseonMacroState& m,
 
         voice.wtFamily = 1;  // hardcoded default (was WT Family knob)
         voice.edgeAmount = std::max(0.0f, std::min(1.0f, e + m.cvEdge));
+        voice.edgeAmount *= (1.0f - 0.55f * tame);
         voice.timbreAmount = std::max(0.0f, std::min(1.0f, m.timbre));
         voice.tiltAmount = std::max(-1.0f, std::min(1.0f, m.cvSpectralTilt));
 
-        int tableIndex = m.wtSelect;
+        int baseTableIndex = m.wtSelect;
         if (numTables <= 0) {
-            tableIndex = 0;
+            baseTableIndex = 0;
         } else {
-            if (tableIndex < 0) tableIndex = 0;
-            if (tableIndex >= numTables) tableIndex = numTables - 1;
+            if (baseTableIndex < 0) baseTableIndex = 0;
+            if (baseTableIndex >= numTables) baseTableIndex = numTables - 1;
         }
 
+        // Operator waveform modes:
+        // Keep the wavetable bank compact (curated tables only). Basic shapes are
+        // implemented procedurally via negative sentinel indices. PhaseonVoice
+        // will pass a null wavetable pointer for any negative index; Operator::tick()
+        // then generates the requested shape.
+        constexpr int kProcSine         = -1;
+        constexpr int kProcTriangle     = -2;
+        constexpr int kProcSaw          = -3;
+        constexpr int kProcHarmonicSin  = -4;
+        constexpr int kProcSkewedSin    = -5;
+
+        auto clampIndex = [&](int idx) {
+            if (idx < 0) return idx; // preserve procedural sentinel indices
+            if (numTables <= 0) return 0;
+            if (idx >= numTables) return numTables - 1;
+            return idx;
+        };
+
         for (int i = 0; i < PhaseonVoice::kNumOps; ++i) {
-            voice.ops[i].tableIndex = tableIndex;
+            int mode = (int)m.opWaveMode[i];
+            int idx = baseTableIndex;
+            switch (mode) {
+            default:
+            case 0: idx = baseTableIndex; break; // WT
+            case 1: idx = kProcSine;      break; // Sine
+            case 2: idx = kProcTriangle;  break; // Triangle
+            case 3: idx = kProcSaw;       break; // Saw
+            case 4: idx = kProcHarmonicSin; break; // Harmonic-enhanced sine (controlled additive)
+            case 5: idx = kProcSkewedSin; break; // Skewed/phase-warped sine
+            }
+            voice.ops[i].tableIndex = clampIndex(idx);
+
+            // All waveform modes remain in WT_PM domain; "Skewed sine" forces extra phase warp.
+            voice.ops[i].domain = OpDomain::WT_PM;
+            if (mode == 5) {
+                // Force a strong, audible warp even when COMPLEX is low.
+                voice.ops[i].warpMode = 5; // Asym
+                voice.ops[i].pdAmount = std::max(voice.ops[i].pdAmount, 0.85f);
+                voice.ops[i].wsMix = std::max(voice.ops[i].wsMix, 0.10f);
+                voice.ops[i].wsDrive = std::max(voice.ops[i].wsDrive, 1.25f);
+            }
         }
     }
 
@@ -371,10 +425,22 @@ inline void applyMacros(PhaseonVoice& voice, const PhaseonMacroState& m,
         float r = ratios.ratios[i];
         // Spectral curve: low ratios respond earlier, high ratios later
         float sensitivity = 1.0f / (1.0f + r * 0.3f);
-        float rawDepth = totalDensity * sensitivity * 3.0f;
-        // Exponential curve for musical feel
+
+        // Density can get harsh quickly with squared scaling (especially with warp/edge).
+        // Keep the same overall behavior but tame the extreme top end.
+        float rawDepth = totalDensity * sensitivity * 2.20f;
+
+        // Softer-than-square curve: preserves low/mid movement but avoids "scrape" at max.
         float fmIdx = rawDepth * rawDepth;
+        fmIdx = 6.00f * tanhf(fmIdx / 6.00f);
+
         voice.ops[i].fmDepth = fmIdx;
+
+        // TAME reduces overall FM depth (prevents scrape/aliasy chaos at high density).
+        voice.ops[i].fmDepth *= (1.0f - 0.55f * tame);
+
+        // More conservative mip selection as density rises (reduces alias-like scraping).
+        voice.ops[i].bandlimitBias = std::max(voice.ops[i].bandlimitBias, 1.0f + totalDensity * 1.25f + tame * 0.75f);
     }
 
     // â”€â”€ Signature 2: WT Region Personality â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -390,7 +456,7 @@ inline void applyMacros(PhaseonVoice& voice, const PhaseonMacroState& m,
         else if (fp < 0.66f)
             zoneMult = 1.0f;                     // 1.0
         else
-            zoneMult = 1.0f + (fp - 0.66f) * 3.0f; // 1.0 .. 2.0
+            zoneMult = 1.0f + (fp - 0.66f) * 1.8f; // 1.0 .. ~1.61
         voice.ops[i].fmDepth *= zoneMult;
     }
 
@@ -405,8 +471,12 @@ inline void applyMacros(PhaseonVoice& voice, const PhaseonMacroState& m,
         if (algo.isCarrier[i]) {
             voice.ops[i].level = 1.0f;
         } else {
-            voice.ops[i].level = 0.3f + totalDensity * 0.7f;
+            // Keep modulators from overwhelming the bus at high density.
+            voice.ops[i].level = 0.25f + totalDensity * 0.55f;
         }
+
+        // TAME reduces operator level for extra headroom.
+        voice.ops[i].level *= (1.0f - 0.40f * tame);
     }
 
     // â”€â”€ Per-operator modulation envelopes (Scene Morph) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -611,9 +681,11 @@ inline void applyMacros(PhaseonVoice& voice, const PhaseonMacroState& m,
     }
     {
         float sk = std::max(0.0f, std::min(1.0f, m.spike));
-        voice.spike.intensity = sk * 2.0f;  // boost: knob 1.0 → intensity 2.0
-        // Scale spike duration with knob: 15ms at low, up to 55ms at max
-        voice.spike.duration  = 0.015f + sk * 0.040f;
+        // PUNCH: keep it clearly audible. (Old SPIKE was ~15..55ms @ intensity up to 2.)
+        // Stronger intensity + slightly longer window makes the transient read as "attack punch".
+        voice.spike.intensity = sk * 3.0f;  // knob 1.0 → intensity 3.0
+        // Transient window: 12..48ms (still "attack" but not just a 1-sample click)
+        voice.spike.duration  = 0.012f + sk * 0.036f;
     }
 
     // Motion â€” knob + Motion CV (was Instability CV jack)

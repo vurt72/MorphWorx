@@ -52,6 +52,7 @@ struct SlideWyrm : Module {
 		REGEN_INPUT,
 		SLIDE_CV_INPUT,
 		GATE_LEN_CV_INPUT,
+		ROOT_CV_INPUT,
 		INPUTS_LEN
 	};
 	enum OutputId {
@@ -201,6 +202,7 @@ struct SlideWyrm : Module {
 		configInput(REGEN_INPUT, "Regenerate trigger");
 		configInput(SLIDE_CV_INPUT, "Slide Amount CV");
 		configInput(GATE_LEN_CV_INPUT, "Gate Length CV");
+		configInput(ROOT_CV_INPUT, "Root select CV (1V/oct, pitch-class)");
 		
 		configOutput(PITCH_OUTPUT, "Pitch (1V/oct)");
 		configOutput(GATE_OUTPUT, "Gate/Accent");
@@ -382,6 +384,16 @@ struct SlideWyrm : Module {
 
 		return voltage + transposeCV;
 	}
+
+	static int pitchClassFromPitchVoltage(float pitchVoltage) {
+		// Match SlideWyrm pitch output convention: 1V/oct, 1/12V per semitone, C = 0.
+		// We only care about pitch class (0-11) for ROOT.
+		int semitone = (int)std::lround(pitchVoltage * 12.f);
+		int pc = semitone % 12;
+		if (pc < 0)
+			pc += 12;
+		return pc;
+	}
 	
 	int getSemitoneForStep(int stepNum) {
 		const Scale& sc = scales[scale];
@@ -405,7 +417,6 @@ struct SlideWyrm : Module {
 		if (++controlRateDivider >= 32) {
 			controlRateDivider = 0;
 			scale = (int)params[SCALE_PARAM].getValue();
-			root = (int)params[ROOT_PARAM].getValue();
 			octaveOffset = (int)params[OCTAVE_PARAM].getValue();
 			densityEncoder = (int)params[DENSITY_PARAM].getValue();
 			int stepsIdx = (int)params[STEPS_PARAM].getValue();
@@ -417,7 +428,7 @@ struct SlideWyrm : Module {
 			}
 			
 			quantizer.setScale(scale);
-			quantizer.setRoot(root);
+			quantizer.setRoot(clamp((int)params[ROOT_PARAM].getValue(), 0, 11));
 			
 			int densityCV = 0;
 			if (inputs[DENSITY_CV_INPUT].isConnected()) {
@@ -456,6 +467,14 @@ struct SlideWyrm : Module {
 		
 		// Clock
 		if (clockTrigger.process(inputs[CLOCK_INPUT].getVoltage(), 0.1f, 2.f)) {
+			// Update effective ROOT at the same cadence as pitch selection.
+			// If patched from PITCH_OUTPUT, this makes ROOT follow SlideWyrm pitch (pitch-class).
+			if (inputs[ROOT_CV_INPUT].isConnected()) {
+				root = pitchClassFromPitchVoltage(inputs[ROOT_CV_INPUT].getVoltage());
+			} else {
+				root = clamp((int)params[ROOT_PARAM].getValue(), 0, 11);
+			}
+
 			cycleTimeSamples = sampleCounter - lastClockSample;
 			lastClockSample = sampleCounter;
 			
@@ -759,7 +778,12 @@ struct SlideWyrmDisplay : TransparentWidget {
 		char displayBuf[64];
 		if (module) {
 			int scaleIdx = (int)module->params[SlideWyrm::SCALE_PARAM].getValue();
-			int rootIdx = (int)module->params[SlideWyrm::ROOT_PARAM].getValue();
+			int rootIdx = 0;
+			if (module->inputs[SlideWyrm::ROOT_CV_INPUT].isConnected()) {
+				rootIdx = SlideWyrm::pitchClassFromPitchVoltage(module->inputs[SlideWyrm::ROOT_CV_INPUT].getVoltage());
+			} else {
+				rootIdx = (int)module->params[SlideWyrm::ROOT_PARAM].getValue();
+			}
 			int octave = (int)module->params[SlideWyrm::OCTAVE_PARAM].getValue();
 			
 			const char* scaleName = scale_names[clamp(scaleIdx, 0, NUM_SCALES - 1)];
@@ -821,7 +845,10 @@ struct SlideWyrmWidget : ModuleWidget {
 		float rightX  = 48.0f;
 		const float pxPerMmY = mm2px(Vec(0.f, 1.f)).y;
 		const float row3bShiftMmY = (pxPerMmY > 0.f) ? (9.f / pxPerMmY) : 0.f;
+
+#ifndef METAMODULE
 		const float topLabelShiftMmY = (pxPerMmY > 0.f) ? (-2.f / pxPerMmY) : 0.f;
+#endif
 
 		// === ROW 1: Density + Scale ===
 #ifndef METAMODULE
@@ -918,23 +945,25 @@ struct SlideWyrmWidget : ModuleWidget {
 		addChild(createLightCentered<SmallLight<GreenLight>>(mm2px(Vec(l4, lightY)), module, SlideWyrm::OCTAVE_DOWN_LIGHT));
 
 		// === Inputs row ===
-		float inLabelY = 98.f;
 		float inY = 105.f;
 #ifndef METAMODULE
-		float in1 = 9.f, in2 = 20.f, in3 = 30.48f, in4 = 41.f, in5 = 52.f;
+		float inLabelY = 98.f;
+		float in1 = 7.5f, in2 = 16.5f, in3 = 25.5f, in4 = 34.5f, in5 = 43.5f, in6 = 52.5f;
 		addChild(swCreateLabel(Vec(in1, inLabelY), "CLK", 7.5f, neonGreen));
 		addChild(swCreateLabel(Vec(in2, inLabelY), "RST", 7.5f, neonGreen));
 		addChild(swCreateLabel(Vec(in3, inLabelY), "TRN", 7.5f, neonGreen));
-		addChild(swCreateLabel(Vec(in4, inLabelY), "DNS", 7.5f, neonGreen));
-		addChild(swCreateLabel(Vec(in5, inLabelY), "REG", 7.5f, neonGreen));
+		addChild(swCreateLabel(Vec(in4, inLabelY), "ROT", 7.5f, neonGreen));
+		addChild(swCreateLabel(Vec(in5, inLabelY), "DNS", 7.5f, neonGreen));
+		addChild(swCreateLabel(Vec(in6, inLabelY), "REG", 7.5f, neonGreen));
 #endif
-		float inSpacing = 10.5f;
-		float inStartX = 9.5f;
+		float inSpacing = 9.f;
+		float inStartX = 7.5f;
 		addInput(createInputCentered<SlideWyrmPort>(mm2px(Vec(inStartX, inY)), module, SlideWyrm::CLOCK_INPUT));
 		addInput(createInputCentered<SlideWyrmPort>(mm2px(Vec(inStartX + inSpacing, inY)), module, SlideWyrm::RESET_INPUT));
 		addInput(createInputCentered<SlideWyrmPort>(mm2px(Vec(inStartX + inSpacing*2, inY)), module, SlideWyrm::TRANSPOSE_INPUT));
-		addInput(createInputCentered<SlideWyrmPort>(mm2px(Vec(inStartX + inSpacing*3, inY)), module, SlideWyrm::DENSITY_CV_INPUT));
-		addInput(createInputCentered<SlideWyrmPort>(mm2px(Vec(inStartX + inSpacing*4, inY)), module, SlideWyrm::REGEN_INPUT));
+		addInput(createInputCentered<SlideWyrmPort>(mm2px(Vec(inStartX + inSpacing*3, inY)), module, SlideWyrm::ROOT_CV_INPUT));
+		addInput(createInputCentered<SlideWyrmPort>(mm2px(Vec(inStartX + inSpacing*4, inY)), module, SlideWyrm::DENSITY_CV_INPUT));
+		addInput(createInputCentered<SlideWyrmPort>(mm2px(Vec(inStartX + inSpacing*5, inY)), module, SlideWyrm::REGEN_INPUT));
 
 		// === Outputs row: PITCH + GATE + ACCENT ===
 		float outY = 115.f;

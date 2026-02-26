@@ -147,14 +147,55 @@ void Operator::tick(float fundamentalHz, float modInput, const Wavetable* table,
             lookupPhase = wrap01(basePhase + fmDepth * modSig);
         }
 
-        // Sample wavetable (or sine fallback)
+        // Sample wavetable (or procedural fallback for negative tableIndex)
         float sample;
         if (table && table->frameCount > 0 && table->frameSize > 0) {
             int mip = table->pickMipLevel(freq, sampleRate, bandlimitBias);
             sample = table->sampleMip(lookupPhase, framePos, mip);
         } else {
-            // Sine fallback
-            sample = sinf(lookupPhase * 6.283185307f);
+            // Procedural basic shapes (selected via negative sentinel indices)
+            // -1: Sine
+            // -2: Triangle
+            // -3: Saw
+            // -4: Harmonic sine stack
+            // -5: Skewed sine (phase-warped)
+            float p = lookupPhase;
+            switch (tableIndex) {
+            default:
+            case -1: {
+                sample = sinf(p * 6.283185307f);
+                break;
+            }
+            case -2: {
+                // Triangle in [-1..1]
+                float u = 2.0f * p - 1.0f;
+                sample = 1.0f - 2.0f * fabsf(u);
+                break;
+            }
+            case -3: {
+                // Saw in [-1..1]
+                sample = 2.0f * p - 1.0f;
+                break;
+            }
+            case -4: {
+                // Controlled harmonic stack (odd+even, quickly rolled off)
+                float w = p * 6.283185307f;
+                float s = 0.0f;
+                s += 1.00f * sinf(w * 1.0f);
+                s += 0.35f * sinf(w * 2.0f);
+                s += 0.22f * sinf(w * 3.0f);
+                s += 0.14f * sinf(w * 4.0f);
+                s += 0.10f * sinf(w * 5.0f);
+                sample = tanhf(s * 0.90f);
+                break;
+            }
+            case -5: {
+                // Skewed sine: asymmetric phase distortion on a sine core.
+                float warped = warpAsym(p, 1.0f);
+                sample = sinf(warped * 6.283185307f);
+                break;
+            }
+            }
         }
 
         // Gentle waveshaping blend (pad-friendly; avoids “more noise”)

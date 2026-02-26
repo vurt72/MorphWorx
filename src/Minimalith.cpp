@@ -1646,7 +1646,7 @@ struct MinimalithWidget : ModuleWidget {
 
 #ifndef METAMODULE
         // PNG faceplate background (drawn on top of the hidden SVG panel).
-        auto* panelBg = new bem::PngPanelBackground(asset::plugin(pluginInstance, "res/Minialith.png"));
+    auto* panelBg = new bem::PngPanelBackground(asset::plugin(pluginInstance, "res/Minimalith.png"));
         panelBg->box.pos = Vec(0, 0);
         panelBg->box.size = box.size;
         addChild(panelBg);
