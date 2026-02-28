@@ -58,7 +58,7 @@ enum class ModDest : uint8_t {
     MotionAmount,    // 0..1
     ComplexAmount,   // 0..1
     ChaosAmount,     // 0..1
-    SpikeIntensity,  // 0..1
+    BitcrushAmount,  // 0..1 (internally capped)
     Instability,     // 0..1
     MasterLevel,     // 0..1
     // ── Per-operator params (ModOpTarget selects which ops are hit)
@@ -137,7 +137,7 @@ inline const char* modDestName(ModDest d) {
     case ModDest::MotionAmount:   return "Motion";
     case ModDest::ComplexAmount:  return "Complex";
     case ModDest::ChaosAmount:    return "Chaos";
-    case ModDest::SpikeIntensity: return "Punch";
+    case ModDest::BitcrushAmount: return "Bitcrush";
     case ModDest::Instability:    return "Instab";
     case ModDest::MasterLevel:    return "Master";
     case ModDest::FramePos:       return "FramePos";
@@ -326,7 +326,8 @@ inline void applyModMatrix(PhaseonVoice& voice,
     applyGlobal(ModDest::MotionAmount,   voice.motionAmount,   0.0f, 1.0f);
     applyGlobal(ModDest::ComplexAmount,  voice.complexAmount,  0.0f, 1.0f);
     applyGlobal(ModDest::ChaosAmount,    voice.chaosAmount,    0.0f, 1.0f);
-    applyGlobal(ModDest::SpikeIntensity, voice.spike.intensity,0.0f, 3.0f);
+    // Bitcrush is capped to match the BITCRUSH knob's max depth.
+    applyGlobal(ModDest::BitcrushAmount, voice.bitcrushAmount, 0.0f, 0.30f);
     applyGlobal(ModDest::Instability,    voice.instability,    0.0f, 1.0f);
     applyGlobal(ModDest::MasterLevel,    voice.masterLevel,    0.0f, 1.0f);
     applyGlobal(ModDest::FormantAmount,  voice.formantAmount,  0.0f, 1.0f);

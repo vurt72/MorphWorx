@@ -27,12 +27,12 @@ struct MVXPort : app::PortWidget {
 	int imageHandle = -1;
 
 	MVXPort() : imagePath(asset::plugin(pluginInstance, "res/ports/MVXport.png")) {
-		static Vec portSize = []() {
-			componentlibrary::PJ301MPort port;
-			return port.box.size;
-		}();
-		box.size = portSize;
-	}
+        static Vec portSize = []() {
+            componentlibrary::PJ301MPort port;
+            return port.box.size;
+        }();
+        box.size = portSize;
+    }
 
 	void draw(const DrawArgs& args) override {
 		if (box.size.x <= 0.f || box.size.y <= 0.f)
@@ -54,6 +54,52 @@ struct MVXPort : app::PortWidget {
 		}
 
 		PortWidget::draw(args);
+	}
+};
+
+// 62.5%-scale visual variant of the stock Rack Trimpot, used for dense layouts
+// like the OP volume row. Hit area stays full-size; only the art is scaled.
+struct MiniTrimpot : componentlibrary::Trimpot {
+	MiniTrimpot() {
+		// Use the base Trimpot's default box size and SVG; no changes needed here.
+	}
+
+    void draw(const DrawArgs& args) override {
+		if (box.size.x <= 0.f || box.size.y <= 0.f)
+			return;
+
+		constexpr float kScale = 0.72f;
+		float cx = box.size.x * 0.5f;
+		float cy = box.size.y * 0.5f;
+
+		nvgSave(args.vg);
+		nvgTranslate(args.vg, cx, cy);
+		nvgScale(args.vg, kScale, kScale);
+		nvgTranslate(args.vg, -cx, -cy);
+		componentlibrary::Trimpot::draw(args);
+		nvgRestore(args.vg);
+	}
+};
+
+// 75%-scale visual variant used for LFO rate/phase/deform/amp trims.
+struct SmallTrimpot : componentlibrary::Trimpot {
+	SmallTrimpot() {
+	}
+
+	void draw(const DrawArgs& args) override {
+		if (box.size.x <= 0.f || box.size.y <= 0.f)
+			return;
+
+		constexpr float kScale = 0.75f;
+		float cx = box.size.x * 0.5f;
+		float cy = box.size.y * 0.5f;
+
+		nvgSave(args.vg);
+		nvgTranslate(args.vg, cx, cy);
+		nvgScale(args.vg, kScale, kScale);
+		nvgTranslate(args.vg, -cx, -cy);
+		componentlibrary::Trimpot::draw(args);
+		nvgRestore(args.vg);
 	}
 };
 

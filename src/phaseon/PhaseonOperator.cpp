@@ -118,24 +118,48 @@ void Operator::tick(float fundamentalHz, float modInput, const Wavetable* table,
         float pmPhase = wrap01(basePhase + fmDepth * totalMod);
 
         // Phase warp (Serum-style warp modes, selected by warpMode)
+        // 0 = Off, 1=Bend+, 2=Bend-, 3=Sync, 4=Quantize, 5=Asym, 6=Classic PD hybrid
         float lookupPhase = pmPhase;
         float pdMix = clampf(pdAmount, 0.0f, 1.0f);
-        if (pdMix > 0.0001f) {
+        if (pdMix > 0.0001f && warpMode != 0) {
             float warped;
             switch (warpMode) {
-            default: // 0 = Classic PD (original behavior)
-            case 0: {
-                float pd = fmDepth * totalMod;
-                pd = clampf(pd * 0.65f, -1.0f, 1.0f);
-                float pdPhase = phaseDistort(basePhase, pd);
-                warped = wrap01(pmPhase + (pdPhase - pmPhase) * pdMix);
-                break;
-            }
             case 1: warped = warpBendPlus(pmPhase, pdMix);   break;
             case 2: warped = warpBendMinus(pmPhase, pdMix);  break;
             case 3: warped = warpSync(pmPhase, pdMix);       break;
-            case 4: warped = warpQuantize(pmPhase, pdMix);   break;
-            case 5: warped = warpAsym(pmPhase, pdMix);       break;
+            case 4: {
+                // Quantize + asym combo: more brutal, stepped movement.
+                float qMix = clampf(pdMix * 1.35f, 0.0f, 1.0f);
+                float q = warpQuantize(pmPhase, qMix);
+                float a = warpAsym(q, clampf(qMix * 0.85f, 0.0f, 1.0f));
+                warped = a;
+                break;
+            }
+            case 5: {
+                // Asym with extra bend and internal feedback; highly expressive.
+                float aMix = clampf(pdMix * 1.25f, 0.0f, 1.0f);
+                float a = warpAsym(pmPhase, aMix);
+                float b = warpBendPlus(a, clampf(aMix * 0.8f, 0.0f, 1.0f));
+                // Subtle self-FM on the phase for extra squelch.
+                float fb = clampf(fmDepth * totalMod * 0.20f, -0.35f, 0.35f);
+                warped = wrap01(b + fb);
+                break;
+            }
+            case 6:
+            default: {
+                // Classic PD-inspired hybrid: aggressive but still continuous.
+                float pd = fmDepth * totalMod;
+                // Stronger drive and asymmetric bias for more aggressive motion.
+                float bias = clampf(totalMod * 0.35f, -0.65f, 0.65f);
+                pd = clampf(pd * 1.20f + bias, -1.2f, 1.2f);
+                float pdPhase = phaseDistort(basePhase, pd);
+                // Blend toward a warped+sync hybrid for extra grit.
+                float pdWarp = wrap01(pmPhase + (pdPhase - pmPhase) * pdMix);
+                float syncWarp = warpSync(pmPhase, clampf(pdMix * 0.65f, 0.0f, 1.0f));
+                float t = clampf(pdMix * 0.8f, 0.0f, 1.0f);
+                warped = wrap01(pdWarp * (1.0f - t) + syncWarp * t);
+                break;
+            }
             }
             lookupPhase = warped;
         }
@@ -159,6 +183,9 @@ void Operator::tick(float fundamentalHz, float modInput, const Wavetable* table,
             // -3: Saw
             // -4: Harmonic sine stack
             // -5: Skewed sine (phase-warped)
+            // -6: Square (softened)
+            // -7: Warp sine (fixed bend+ warp)
+            // -8: Rectified sine
             float p = lookupPhase;
             switch (tableIndex) {
             default:
@@ -193,6 +220,25 @@ void Operator::tick(float fundamentalHz, float modInput, const Wavetable* table,
                 // Skewed sine: asymmetric phase distortion on a sine core.
                 float warped = warpAsym(p, 1.0f);
                 sample = sinf(warped * 6.283185307f);
+                break;
+            }
+            case -6: {
+                // Soft square: avoid brutal discontinuities but still aggressive.
+                float w = p * 6.283185307f;
+                sample = tanhf(sinf(w) * 4.0f);
+                break;
+            }
+            case -7: {
+                // Warp sine: fixed bend+ warp for a distinct, vocal-ish waveform.
+                float warped = warpBendPlus(p, 0.70f);
+                sample = sinf(warped * 6.283185307f);
+                break;
+            }
+            case -8: {
+                // Rectified sine in [-1..1]
+                float w = p * 6.283185307f;
+                float s = sinf(w);
+                sample = fabsf(s) * 2.0f - 1.0f;
                 break;
             }
             }

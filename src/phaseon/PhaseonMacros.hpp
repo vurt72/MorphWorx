@@ -170,11 +170,22 @@ struct PhaseonMacroState {
     // TAME: global softener for harshness/clipping (0=off, 1=max tame)
     float tame        = 0.0f;
 
-    // Spike (transient punch): 0..1, drives TransientSpike intensity + duration
+    // Feedback boost: scales operator self-feedback; can add a touch of carrier feedback.
+    // 0 = legacy behavior, 1 = very feedback-heavy.
+    float feedbackBoost = 0.0f;
+
+    // Per-operator ratio offset. Affects the currently selected operator.
+    // 0 = no change, -1 = detune down, +1 = detune up.
+    float opFreq[PhaseonVoice::kNumOps] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+
+    // Per-operator output level trims (0..1, default 1.0)
+    float opLevelTrim[PhaseonVoice::kNumOps] = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
+
+    // Bitcrush amount (0 = clean, 1 = heavy), driven by the old SPIKE knob.
     float spike       = 0.0f;
 
-    // Master tail control (0 = ultra short, 1 = very long / drone-ish)
-    float tail        = 0.73f;
+    // LFO macro amount (repurposed from Tail). 0 = off, 1 = extreme growl.
+    float tail        = 0.0f;
 
     // Drift: combined Chaos + Instability (was WT Family)
     // 0..0.5 = instability ramps up, 0.5..1.0 = chaos joins in
@@ -183,7 +194,9 @@ struct PhaseonMacroState {
     // Explicit wavetable selector (table index in the loaded bank)
     int   wtSelect    = 0;
 
-    // Per-operator waveform mode (0=WT, 1=Sine, 2=Triangle, 3=Saw, 4=Harmonic Sine, 5=Skewed Sine)
+    // Per-operator waveform mode
+    // 0=WT, 1=Sine, 2=Triangle, 3=Saw, 4=Harmonic Sine, 5=Skewed Sine,
+    // 6=Square, 7=Warp Sine, 8=Rectified Sine
     // Stored/owned by the module/preset system; applied here at control-rate.
     uint8_t opWaveMode[PhaseonVoice::kNumOps] = { 0, 0, 0, 0, 0, 0 };
 
@@ -206,10 +219,22 @@ struct PhaseonMacroState {
 
     // Algorithm (typically from FM Character or separate selector)
     int algorithmIndex = 0;
-    // Warp mode selector (0=Classic PD, 1=Bend+, 2=Bend-, 3=Sync, 4=Quantize, 5=Asym)
+    // Warp mode selector: 0=Off, 1=Bend+, 2=Bend-, 3=Sync, 4=Quantize, 5=Asym, 6=Classic PD hybrid
     int warpMode = 0;
     // Modulation matrix (6 slots: source â†’ destination + amount)
     PhaseonModConfig modMatrix;
+    // Per-LFO controls (Surge-style), per-operator (2 LFOs × 6 ops)
+    float lfoRate[2][PhaseonVoice::kNumOps]        = { {0.5f,0.5f,0.5f,0.5f,0.5f,0.5f}, {0.5f,0.5f,0.5f,0.5f,0.5f,0.5f} };    // 0..1 mapped to Hz multiplier
+    float lfoPhaseOffset[2][PhaseonVoice::kNumOps] = { {0.0f,0.0f,0.0f,0.0f,0.0f,0.0f}, {0.0f,0.0f,0.0f,0.0f,0.0f,0.0f} };    // 0..1 phase offset
+    float lfoDeform[2][PhaseonVoice::kNumOps]      = { {0.0f,0.0f,0.0f,0.0f,0.0f,0.0f}, {0.0f,0.0f,0.0f,0.0f,0.0f,0.0f} };    // 0..1 shape morph
+    float lfoAmp[2][PhaseonVoice::kNumOps]         = { {1.0f,1.0f,1.0f,1.0f,1.0f,1.0f}, {1.0f,1.0f,1.0f,1.0f,1.0f,1.0f} };    // 0..1 amplitude
+    int   lfoTargetOp[2]                           = {-1, -1}; // -1=ALL, 0..5=specific operator
+
+    // Per-operator ENV edit shapes (0..1, 0.5 = neutral)
+    float envAtkShape[PhaseonVoice::kNumOps] = {0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f};
+    float envDecShape[PhaseonVoice::kNumOps] = {0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f};
+    float envSusShape[PhaseonVoice::kNumOps] = {0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f};
+    float envRelShape[PhaseonVoice::kNumOps] = {0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f};
 };
 
 // â”€â”€â”€ Apply macros to voice â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -297,7 +322,8 @@ inline void applyMacros(PhaseonVoice& voice, const PhaseonMacroState& m,
         float spreadAmt = std::max(0.0f, std::min(1.0f, m.envSpread));
         float edgeAmt = std::max(0.0f, std::min(1.0f, m.edge));
         // Bigger re-voice range than before; still clamped to [0..1].
-        float shuffleOffset = r * (0.30f + 0.45f * spreadAmt + 0.20f * edgeAmt);
+        // Slightly stronger than legacy to make SHUFFLE feel more dramatic.
+        float shuffleOffset = r * (0.38f + 0.55f * spreadAmt + 0.28f * edgeAmt);
 
         voice.ops[i].framePos = std::max(0.0f, std::min(1.0f, baseFP + offset + shuffleOffset));
     }
@@ -314,7 +340,12 @@ inline void applyMacros(PhaseonVoice& voice, const PhaseonMacroState& m,
         float dens = std::max(0.0f, std::min(1.0f, m.density + m.cvHarmonicDensity * 0.5f));
 
         // Global shuffle intensity: audible at low settings, wilder with edge/density.
-        float shGlobal = (0.35f + 0.55f * edgeAmt + 0.25f * dens) * (0.75f + 0.55f * spreadAmt);
+        // Tie in SCRAMBLE a bit so higher SCRAMBLE also implies stronger re-voicing.
+        float scrRaw = clampf_local(m.scramble, 0.0f, 2.0f);
+        float scr01 = std::min(1.0f, scrRaw);
+        float scrX  = std::max(0.0f, scrRaw - 1.0f);
+        float shGlobal = (0.40f + 0.70f * edgeAmt + 0.35f * dens) * (0.80f + 0.70f * spreadAmt) * (1.0f + 0.25f * scr01 + 0.45f * scrX);
+        if (shGlobal > 2.25f) shGlobal = 2.25f;
 
         auto hash32_local = [](uint32_t x) {
             x ^= x >> 16;
@@ -336,16 +367,16 @@ inline void applyMacros(PhaseonVoice& voice, const PhaseonMacroState& m,
             float sh = shGlobal * modScale;
 
             // FM depth re-voice (timbre changes without breaking tuning)
-            float fmMul = 1.0f + clampf_local(rA, -1.0f, 1.0f) * (1.20f * sh);
+            float fmMul = 1.0f + clampf_local(rA, -1.0f, 1.0f) * (1.65f * sh);
             voice.ops[i].fmDepth *= clampf_local(fmMul, 0.15f, 5.00f);
 
             // Extra warp/drive personality; stays bounded.
-            float pdAdd = (0.10f + 0.35f * edgeAmt) * sh * (0.35f + 0.65f * std::fabs(rB));
+            float pdAdd = (0.12f + 0.45f * edgeAmt) * sh * (0.35f + 0.65f * std::fabs(rB));
             voice.ops[i].pdAmount = clamp01_local(voice.ops[i].pdAmount + pdAdd);
 
-            float wsAdd = (0.08f + 0.22f * edgeAmt) * sh * (0.50f + 0.50f * rB);
+            float wsAdd = (0.10f + 0.28f * edgeAmt) * sh * (0.50f + 0.50f * rB);
             voice.ops[i].wsMix = clamp01_local(voice.ops[i].wsMix + wsAdd);
-            voice.ops[i].wsDrive = std::max(1.0f, voice.ops[i].wsDrive + (0.55f + 1.10f * edgeAmt) * sh * std::fabs(rA));
+            voice.ops[i].wsDrive = std::max(1.0f, voice.ops[i].wsDrive + (0.70f + 1.40f * edgeAmt) * sh * std::fabs(rA));
 
             // Encourage more conservative mip choice under heavier shuffle drive.
             voice.ops[i].bandlimitBias = 1.0f + 0.90f * sh;
@@ -381,6 +412,9 @@ inline void applyMacros(PhaseonVoice& voice, const PhaseonMacroState& m,
         constexpr int kProcSaw          = -3;
         constexpr int kProcHarmonicSin  = -4;
         constexpr int kProcSkewedSin    = -5;
+        constexpr int kProcSquare       = -6;
+        constexpr int kProcWarpSine     = -7;
+        constexpr int kProcRectSine     = -8;
 
         auto clampIndex = [&](int idx) {
             if (idx < 0) return idx; // preserve procedural sentinel indices
@@ -400,6 +434,9 @@ inline void applyMacros(PhaseonVoice& voice, const PhaseonMacroState& m,
             case 3: idx = kProcSaw;       break; // Saw
             case 4: idx = kProcHarmonicSin; break; // Harmonic-enhanced sine (controlled additive)
             case 5: idx = kProcSkewedSin; break; // Skewed/phase-warped sine
+            case 6: idx = kProcSquare;    break; // Square
+            case 7: idx = kProcWarpSine;  break; // Warp sine
+            case 8: idx = kProcRectSine;  break; // Rectified sine
             }
             voice.ops[i].tableIndex = clampIndex(idx);
 
@@ -462,7 +499,11 @@ inline void applyMacros(PhaseonVoice& voice, const PhaseonMacroState& m,
 
     // â”€â”€ Operator ratios (from FM Character set) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     for (int i = 0; i < PhaseonVoice::kNumOps; ++i) {
-        voice.ops[i].ratio = ratios.ratios[i];
+        float semi = m.opFreq[i];
+        if (semi < -24.0f) semi = -24.0f;
+        if (semi >  24.0f) semi =  24.0f;
+        float mul = powf(2.0f, semi / 12.0f);
+        voice.ops[i].ratio = ratios.ratios[i] * mul;
     }
 
     // â”€â”€ Operator levels â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -477,6 +518,10 @@ inline void applyMacros(PhaseonVoice& voice, const PhaseonMacroState& m,
 
         // TAME reduces operator level for extra headroom.
         voice.ops[i].level *= (1.0f - 0.40f * tame);
+
+        // Per-operator trims (panel trimpots)
+        float trim = std::max(0.0f, std::min(1.0f, m.opLevelTrim[i]));
+        voice.ops[i].level *= trim;
     }
 
     // â”€â”€ Per-operator modulation envelopes (Scene Morph) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -523,7 +568,11 @@ inline void applyMacros(PhaseonVoice& voice, const PhaseonMacroState& m,
 
     float edgeV = clamp01(m.edge);
     float spread = clamp01(m.envSpread);
-    float scramble = clamp01(m.scramble);
+    // SCRAMBLE extended range: 0..1 behaves like before, 1..2 = extra wild, 2..3 = ultra.
+    float scrambleRaw = clampf(m.scramble, 0.0f, 3.0f);
+    float scramble = clampf(scrambleRaw, 0.0f, 1.0f);
+    float scrambleX = clampf(scrambleRaw - 1.0f, 0.0f, 1.0f); // 0..1 extra range
+    float scrambleU = std::max(0.0f, scrambleRaw - 2.0f);      // 0..1 ultra range
     float loopRate = 1.0f; // LOOP_RATE_CV removed; loop rate fixed at unity
 
     // â”€â”€ SCRAMBLE: assign unique secondary targets per operator â”€â”€â”€â”€â”€â”€â”€
@@ -541,7 +590,10 @@ inline void applyMacros(PhaseonVoice& voice, const PhaseonMacroState& m,
             usedTarget[tid] = true;
             voice.scrambleTargetId[i] = tid;
             // Quadratic ramp: subtle at low SCRAMBLE, strong at high
-            voice.scrambleSecAmount[i] = scramble * scramble * 1.6f;
+            float baseAmt  = scramble * scramble * 1.6f;
+            float extraAmt = scrambleX * scrambleX * 2.0f;
+            float ultraAmt = scrambleU * scrambleU * 3.0f;
+            voice.scrambleSecAmount[i] = clamp01(baseAmt + extraAmt + ultraAmt);
         }
     }
 
@@ -596,20 +648,21 @@ inline void applyMacros(PhaseonVoice& voice, const PhaseonMacroState& m,
         float rs = u01(hash32(seed ^ 0x400u)) * 2.0f - 1.0f;
 
         // Effective diversity = spread baseline + scramble amplification
-        float diversity = spread + scramble * 2.5f;
+        // Extended range increases divergence further.
+        float diversity = spread + scramble * 2.5f + scrambleX * 4.0f + scrambleU * 6.5f;
 
         float aMul = 1.0f + diversity * ra * 0.35f;
         float dMul = 1.0f + diversity * rd * 0.40f;
         float rMul = 1.0f + diversity * rr * 0.45f;
-        float sAdd = (spread + scramble * 0.90f) * rs * 0.45f;
+        float sAdd = (spread + scramble * 0.90f + scrambleX * 1.10f + scrambleU * 1.40f) * rs * 0.45f;
 
         // SCRAMBLE widens clamp ranges dramatically
-        float aMin = 0.55f - scramble * 0.50f; // down to 0.05 at max
-        float aMax = 1.75f + scramble * 12.0f;  // up to 13.75 at max
-        float dMin = 0.60f - scramble * 0.52f;  // down to 0.08
-        float dMax = 1.90f + scramble * 8.0f;   // up to 9.9
-        float rMin = 0.50f - scramble * 0.45f;  // down to 0.05
-        float rMax = 2.20f + scramble * 5.5f;   // up to 7.7
+        float aMin = 0.55f - scramble * 0.50f - scrambleX * 0.20f - scrambleU * 0.22f;
+        float aMax = 1.75f + scramble * 12.0f + scrambleX * 18.0f + scrambleU * 26.0f;
+        float dMin = 0.60f - scramble * 0.52f - scrambleX * 0.20f - scrambleU * 0.22f;
+        float dMax = 1.90f + scramble * 8.0f  + scrambleX * 12.0f + scrambleU * 18.0f;
+        float rMin = 0.50f - scramble * 0.45f - scrambleX * 0.18f - scrambleU * 0.20f;
+        float rMax = 2.20f + scramble * 5.5f  + scrambleX * 9.0f  + scrambleU * 14.0f;
 
         a *= clampf(aMul, aMin, aMax);
         d *= clampf(dMul, dMin, dMax);
@@ -619,7 +672,7 @@ inline void applyMacros(PhaseonVoice& voice, const PhaseonMacroState& m,
         // â”€â”€ Envelope curve (SCRAMBLE-driven, per-operator) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         // curve = -1..+1: negative = logarithmic/soft, positive = exponential/snappy
         float rc = u01(hash32(seed ^ 0x500u)) * 2.0f - 1.0f;
-        e.curve = scramble * rc * 1.5f;
+        e.curve = (scramble + scrambleX * 0.85f + scrambleU * 1.10f) * rc * 1.5f;
 
         // Edge tightens the envelope a bit (more percussive when Edge high)
         // Keep Swell less affected so pads remain possible.
@@ -637,8 +690,38 @@ inline void applyMacros(PhaseonVoice& voice, const PhaseonMacroState& m,
 
         // â”€â”€ Per-operator release independence (SCRAMBLE) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         // At higher SCRAMBLE, each op's release diverges independently of TAIL.
-        if (scramble > 0.01f) {
-            r *= 1.0f + scramble * rr * 1.5f;
+        if (scrambleRaw > 0.01f) {
+            r *= 1.0f + (scramble + scrambleX * 1.10f + scrambleU * 1.25f) * rr * 1.5f;
+        }
+
+        // Apply user ENV shape edits (per-operator, driven by shared trimpots).
+        // This block is LAST in the per-operator ADSR chain: it overwrites the
+        // previously computed attack/decay/sustain/release so the ENV editor
+        // always wins for operator envelopes.
+        {
+            float aShape = clamp01(m.envAtkShape[i]);
+            float dShape = clamp01(m.envDecShape[i]);
+            float sShape = clamp01(m.envSusShape[i]);
+            float rShape = clamp01(m.envRelShape[i]);
+
+            // Absolute attack/decay/release times from 0..1 knobs.
+            auto mapTime = [](float v, float minT, float maxT) {
+                // Log curve: 0 => minT, 1 => maxT
+                float t = std::max(0.0f, std::min(1.0f, v));
+                float logMin = std::log(std::max(minT, 1e-5f));
+                float logMax = std::log(std::max(maxT, minT + 1e-5f));
+                float logT  = logMin + (logMax - logMin) * t;
+                return std::exp(logT);
+            };
+
+            // Chosen ranges: very snappy at 0, clearly slow at 1.
+            a = mapTime(aShape, 0.0005f, 5.0f);   // 0.5ms .. 5s
+            d = mapTime(dShape, 0.0020f, 8.0f);   // 2ms  .. 8s
+            r = mapTime(rShape, 0.0020f, 20.0f);  // 2ms  .. 20s
+
+            // Sustain is mostly absolute: 0..1, with a touch of archetype blend.
+            float sTarget = clamp01(sShape);
+            s = clamp01(s * 0.25f + sTarget * 0.75f);
         }
 
         // Apply final
@@ -657,7 +740,7 @@ inline void applyMacros(PhaseonVoice& voice, const PhaseonMacroState& m,
         // â”€â”€ Carrier protection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         // The most stable carrier always gets a safe, predictable envelope
         // so the fundamental pitch anchor is never lost.
-        if (i == protectedCarrier && scramble > 0.01f) {
+        if (i == protectedCarrier && scrambleRaw > 0.01f) {
             e.attack  = std::min(e.attack, 0.010f);
             e.sustain = std::max(e.sustain, 0.50f);
             e.release = std::max(e.release, 0.050f);
@@ -666,10 +749,10 @@ inline void applyMacros(PhaseonVoice& voice, const PhaseonMacroState& m,
         }
     }
 
-    // ── Chaos / Spike / Instability ──────────────────────────────────
+    // ── Chaos / Bitcrush / Instability ────────────────────────────────
     // DRIFT knob: 0..0.5 = instability ramps up (warm analog drift)
     //             0.5..1.0 = chaos also ramps in (organic FM sweet-spot exploration)
-    // Spike: driven by the SPIKE knob. Mod matrix can still push all three.
+    // Bitcrush: driven by the Bitcrush knob (formerly SPIKE). Mod matrix can still push all three.
     {
         float d = std::max(0.0f, std::min(1.0f, m.drift));
         // Instability: ramps 0→1.0 over the first half, stays at 1.0 for the second half
@@ -680,24 +763,52 @@ inline void applyMacros(PhaseonVoice& voice, const PhaseonMacroState& m,
         voice.instability = inst;
     }
     {
-        float sk = std::max(0.0f, std::min(1.0f, m.spike));
+        // ENV Attack trimpot shapes PUNCH: A=0 => max punch, A=1 => no punch.
+        // Take the average Attack shape across operators so the PUNCH behavior
+        // follows the overall ENV editor when editing ALL/OP.
+        float atkSum = 0.0f;
+        for (int i = 0; i < PhaseonVoice::kNumOps; ++i)
+            atkSum += m.envAtkShape[i];
+        float atkAvg = atkSum / (float)PhaseonVoice::kNumOps; // 0..1
+
+        // AttackPunch goes from 1.0 at A=0 (hard transient) down toward 0 at A=1.
+        float attackPunch = 1.0f - atkAvg;
+        if (attackPunch < 0.0f) attackPunch = 0.0f;
+        if (attackPunch > 1.0f) attackPunch = 1.0f;
+
         // PUNCH: keep it clearly audible. (Old SPIKE was ~15..55ms @ intensity up to 2.)
         // Stronger intensity + slightly longer window makes the transient read as "attack punch".
-        voice.spike.intensity = sk * 3.0f;  // knob 1.0 → intensity 3.0
+        voice.spike.intensity = attackPunch * 3.0f;  // 1.0 → intensity 3.0
         // Transient window: 12..48ms (still "attack" but not just a 1-sample click)
-        voice.spike.duration  = 0.012f + sk * 0.036f;
+        voice.spike.duration  = 0.012f + attackPunch * 0.036f;
     }
 
     // Motion â€” knob + Motion CV (was Instability CV jack)
     voice.motionAmount = std::max(0.0f, std::min(1.0f, m.motion + m.cvMotion));
 
-    // â”€â”€ Master amp envelope timing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    // Edge still tightens, but bass-focused ENV STYLE must be able to do very short releases.
-    // TAIL overrides this and can extend release to near-infinite.
+    // Bitcrush amount (0 = clean, 1 = heavy). Driven by the Bitcrush knob.
+    voice.bitcrushAmount = std::max(0.0f, std::min(1.0f, m.spike));
+    // Per-LFO user controls (per-operator)
+    for (int li = 0; li < 2; ++li) {
+        voice.lfoTargetOp[li] = m.lfoTargetOp[li];
+        for (int oi = 0; oi < PhaseonVoice::kNumOps; ++oi) {
+            voice.lfoRateUser[li][oi]   = m.lfoRate[li][oi];
+            voice.lfoPhaseUser[li][oi]  = m.lfoPhaseOffset[li][oi];
+            voice.lfoDeformUser[li][oi] = m.lfoDeform[li][oi];
+            voice.lfoAmpUser[li][oi]    = m.lfoAmp[li][oi];
+        }
+    }
+    // â”€â”€ Master amp envelope timing (now driven primarily by ENV editor) â”€â”€â”€â”€â”€
+    // Existing ENV STYLE / EDGE / TAIL still influence the *initial* suggestion,
+    // but the ENV trimpots (env*Shape) will overwrite attack/decay/sustain/release
+    // later so that the ADSR editor behaves like a true VCA env.
     edgeV = std::max(0.0f, std::min(1.0f, m.edge));
     float style = std::max(0.0f, std::min(4.0f, m.envStyle));
     float bias  = 0.78f;  // hardcoded default (was m.roleBias)
-    float tail  = std::max(0.0f, std::min(1.0f, m.tail));
+
+    // LFO macro: 0..1, repurposed from Tail knob. Drives growl LFO in the
+    // voice but no longer affects the master amp envelope directly.
+    voice.macroLfoAmount = std::max(0.0f, std::min(1.0f, m.tail));
 
     // Tightness: 1 at Impact/Stab, fades out toward Swell.
     float tight = 1.0f - std::max(0.0f, std::min(1.0f, (style - 1.8f) / 1.6f));
@@ -708,25 +819,15 @@ inline void applyMacros(PhaseonVoice& voice, const PhaseonMacroState& m,
     voice.ampEnv.decay   = 0.05f  + (1.0f - edgeV) * 0.8f;
     voice.ampEnv.sustain = 0.3f   + (1.0f - edgeV) * 0.5f;
 
-    // TAIL is the master release control:
-    // - TAIL=0 => near-instant release (no ringing)
-    // - TAIL=1 => very long / drone
-    float tailT = std::max(0.0f, std::min(1.0f, tail));
-    float tailCurve = tailT * tailT;
-    const float minRel = 0.0015f;
-    // minRel * 20000 ~= 30s at tailCurve=1, then clamp to 25s.
-    float rel = minRel * powf(20000.0f, tailCurve);
-    if (rel > 25.0f) rel = 25.0f;
-
-    // Edge/tightness can only shorten the release (never lengthen at TAIL=0)
-    float shorten = 1.0f - edgeV * (0.70f * tight);
-    if (shorten < 0.25f) shorten = 0.25f;
-    rel *= shorten;
-    if (rel < minRel) rel = minRel;
-
-    voice.ampEnv.release = rel;
+    // Legacy TAIL-driven release is no longer needed since per-operator ENV
+    // shapes set the audible release. Keep a fixed, conservative release on
+    // the master amp env for click-suppression only.
+    const float minRel = 0.010f;
+    float rel = 0.120f;
+    voice.ampEnv.release = std::max(minRel, rel);
 
     // â”€â”€ Operator self-feedback from Edge (+ SHUFFLE personality) â”€â”€â”€
+    // FEEDBACK BOOST scales this block without adding any extra DSP cost.
     for (int i = 0; i < PhaseonVoice::kNumOps; ++i) {
         // Only modulators get feedback (carriers stay clean)
         if (!algo.isCarrier[i]) {
@@ -738,9 +839,19 @@ inline void applyMacros(PhaseonVoice& voice, const PhaseonMacroState& m,
             float base = 0.06f + edgeV * 0.58f;
             base *= (0.85f + 0.55f * spreadAmt);
             float var = 0.70f + 0.65f * std::fabs(r);
-            voice.ops[i].feedback = clampf(base * var, 0.0f, 0.98f);
+            float fbRaw = clampf(m.feedbackBoost, 0.0f, 2.0f);
+            float fb01 = std::min(1.0f, fbRaw);
+            float fbX  = std::max(0.0f, fbRaw - 1.0f);
+            float scale = 1.0f + fb01 * 2.5f + fbX * 4.0f; // 1x..7.5x
+            voice.ops[i].feedback = clampf(base * var * scale, 0.0f, 0.98f);
         } else {
-            voice.ops[i].feedback = 0.0f;
+            // Optional carrier feedback: off by default; adds bite/sizzle when boosted.
+            float fbRaw = clampf(m.feedbackBoost, 0.0f, 2.0f);
+            float fb01 = std::min(1.0f, fbRaw);
+            float fbX  = std::max(0.0f, fbRaw - 1.0f);
+            float baseCarrier = (0.02f + edgeV * 0.30f);
+            float carrierFb = (fb01 * fb01 + fbX * 1.35f) * baseCarrier;
+            voice.ops[i].feedback = clampf(carrierFb, 0.0f, 0.85f);
         }
     }
 
@@ -750,8 +861,25 @@ inline void applyMacros(PhaseonVoice& voice, const PhaseonMacroState& m,
     // Mod matrix can push either independently after this point.
     {
         float fv = std::max(0.0f, std::min(1.0f, m.formant + m.cvFormant));
-        voice.vowelPos      = fv;
-        voice.formantAmount = fv;
+
+        // Vowel snapping (dubstep-friendly): below ~0.5 shouldn't be dull.
+        // Ramp snapping aggressively so by 0.5 you're already in strong vowel zones.
+        // Deliberately allows jumps; we don't need seamless blending.
+        float snap = (fv - 0.15f) / 0.35f; // 0 below ~0.15, ~1 by 0.5
+        if (snap < 0.0f) snap = 0.0f;
+        if (snap > 1.0f) snap = 1.0f;
+        float q = fv * 4.0f;
+        float qn = std::round(q) / 4.0f;
+        float vp = fv * (1.0f - snap) + qn * snap;
+
+        // Intensity curve: make the first half much more useful.
+        // Vowel position uses fv (snapped) so the mouth axis remains full-range,
+        // but intensity rises faster so 0.2..0.5 is already clearly vocal.
+        float formAmt = fv * 1.55f; // 0.32 -> 0.50, 0.50 -> 0.78
+        if (formAmt > 1.0f) formAmt = 1.0f;
+
+        voice.vowelPos      = std::max(0.0f, std::min(1.0f, vp));
+        voice.formantAmount = formAmt;
     }
 
     // ── Modulation matrix (applied last, after all base values are set) ──

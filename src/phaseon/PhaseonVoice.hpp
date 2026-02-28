@@ -168,6 +168,16 @@ struct PhaseonVoice {
     // Motion (macro life system)
     float motionAmount = 0.0f; // 0..1
 
+    // Macro LFO amount (repurposed from TAIL knob). 0 = off, 1 = max.
+    float macroLfoAmount = 0.0f;
+
+    // Per-LFO user controls (set by applyMacros from module trimpots), per-operator
+    float lfoRateUser[2][kNumOps]    = { {0.5f,0.5f,0.5f,0.5f,0.5f,0.5f}, {0.5f,0.5f,0.5f,0.5f,0.5f,0.5f} };    // 0..1 mapped to Hz mult
+    float lfoPhaseUser[2][kNumOps]   = { {0.0f,0.0f,0.0f,0.0f,0.0f,0.0f}, {0.0f,0.0f,0.0f,0.0f,0.0f,0.0f} };    // 0..1 phase offset
+    float lfoDeformUser[2][kNumOps]  = { {0.0f,0.0f,0.0f,0.0f,0.0f,0.0f}, {0.0f,0.0f,0.0f,0.0f,0.0f,0.0f} };    // 0..1 shape morph
+    float lfoAmpUser[2][kNumOps]     = { {1.0f,1.0f,1.0f,1.0f,1.0f,1.0f}, {1.0f,1.0f,1.0f,1.0f,1.0f,1.0f} };    // 0..1 amplitude
+    int   lfoTargetOp[2]             = {-1, -1};        // -1=ALL, 0..5=specific op
+
     // Cross-operator coupling network (0..1)
     float networkAmount = 0.0f;
 
@@ -200,6 +210,14 @@ struct PhaseonVoice {
     float outL = 0.0f;
     float outR = 0.0f;
 
+    // Bitcrusher amount (0 = clean, 1 = heavy). Set by macros via the
+    // repurposed SPIKE/Bitcrush knob.
+    float bitcrushAmount = 0.0f;
+    // Bitcrusher internal state: sample-and-hold downsampler + quantizer.
+    float bitcrushHoldL = 0.0f;
+    float bitcrushHoldR = 0.0f;
+    int   bitcrushSamplesLeft = 0;
+
     // ── Mod matrix runtime (smoothed signal per slot) ──────────────
     PhaseonModRuntime modRuntime;
 
@@ -214,6 +232,8 @@ struct PhaseonVoice {
     // Motion state
     float lfo1Phase = 0.0f;
     float lfo2Phase = 0.0f;
+    // Per-operator LFO2 phase (required for per-op rate control)
+    float lfo2PhaseOp[kNumOps] = {};
     float randLane = 0.0f;
     float randTarget = 0.0f;
     float randSlew = 0.0f;
@@ -293,6 +313,8 @@ struct PhaseonVoice {
         outL = outR = 0.0f;
 
         lfo1Phase = lfo2Phase = 0.0f;
+        for (int i = 0; i < kNumOps; ++i)
+            lfo2PhaseOp[i] = 0.0f;
         randLane = randTarget = 0.0f;
         randSlew = 0.0f;
         randTimer = 0.0f;
@@ -369,7 +391,13 @@ struct PhaseonVoice {
             opEnvs[i].gate(false);
     }
 
-    bool isActive() const { return ampEnv.isActive(); }
+    bool isActive() const {
+        if (ampEnv.isActive()) return true;
+        for (int i = 0; i < kNumOps; ++i) {
+            if (opEnvs[i].isActive()) return true;
+        }
+        return false;
+    }
 
     // Apply a new role seed immediately (no re-gate). Used by SHUFFLE for mid-note re-voicing.
     void applyRoleSeed(uint32_t newSeed) {
@@ -400,12 +428,9 @@ struct PhaseonVoice {
     void tick(const WavetableBank& bank, float sampleRate) {
         const float dt = 1.0f / sampleRate;
 
-        // Amp envelope
+        // Amp envelope: still ticked for click-suppression / legacy behavior,
+        // but amplitude shaping is now handled by per-operator envelopes.
         float envLevel = ampEnv.tick(dt);
-        if (envLevel <= 0.0f) {
-            outL = outR = 0.0f;
-            return;
-        }
 
         // Per-operator modulation envelopes
         float modEnv[kNumOps];
@@ -418,13 +443,68 @@ struct PhaseonVoice {
 
         // Motion engine (life system): 2 LFOs + smoothed random lane + micro movement
         float motion = std::max(0.0f, std::min(1.0f, motionAmount));
+
+        // User-controlled LFO rates: map 0..1 knob to Hz multiplier
+        // Rate=0.5 gives roughly the old hardcoded speed (1x)
+        auto getRateMult = [](float v) {
+            if (v >= 0.49f && v <= 0.51f) return 1.0f;
+            if (v > 0.5f) {
+                // 0.5..1.0 maps to 1x..8x
+                return 1.0f + (v - 0.5f) * 2.0f * 7.0f;
+            } else {
+                // 0.0..0.5 maps to /32, /16, /8, /4, /3, /2
+                int divs[] = {32, 16, 8, 4, 3, 2};
+                int idx = (int)(v * 2.0f * 5.99f);
+                if (idx < 0) idx = 0;
+                if (idx > 5) idx = 5;
+                return 1.0f / (float)divs[idx];
+            }
+        };
+        
+        // Scalar LFO phases (used by mod-matrix sources); follow operator 0 settings.
+        float rate1 = 0.18f * getRateMult(lfoRateUser[0][0]);
+        float rate2Base = 0.41f * getRateMult(lfoRateUser[1][0]);
         float rateScale = 0.25f + motion * 2.5f;
-        lfo1Phase += dt * (0.18f * rateScale);
-        lfo2Phase += dt * (0.41f * rateScale);
+        lfo1Phase += dt * (rate1 * rateScale);
+        lfo2Phase += dt * (rate2Base * rateScale);
         if (lfo1Phase >= 1.0f) lfo1Phase -= 1.0f;
         if (lfo2Phase >= 1.0f) lfo2Phase -= 1.0f;
-        float lfo1 = sinf(lfo1Phase * 6.283185307f);
-        float lfo2 = sinf(lfo2Phase * 6.283185307f + 1.7f);
+
+        // Per-operator LFO2 phase (required for per-op rate control)
+        for (int i = 0; i < kNumOps; ++i) {
+            float rate2 = 0.41f * getRateMult(lfoRateUser[1][i]);
+            lfo2PhaseOp[i] += dt * (rate2 * rateScale);
+            if (lfo2PhaseOp[i] >= 1.0f) lfo2PhaseOp[i] -= 1.0f;
+        }
+
+        // Compute per-operator LFO values (offset + deform + amplitude)
+        float lfo1Op[kNumOps] = {};
+        float lfo2Op[kNumOps] = {};
+
+        // Target=ALL phase staggering:
+        // - LFO1 staggering scales with Motion (0..1) when LFO1 targets ALL
+        // - LFO2 staggering scales with Growl knob (macroLfoAmount) (0..1) when LFO2 targets ALL
+        float lfo1StaggerAmt = (lfoTargetOp[0] == -1) ? motion : 0.0f;
+        float macroLfo = clamp01(macroLfoAmount);
+        float lfo2StaggerAmt = (lfoTargetOp[1] == -1) ? macroLfo : 0.0f;
+
+        for (int i = 0; i < kNumOps; ++i) {
+            // LFO1 (shared params, but per-op staggering)
+            float p1 = lfo1Phase + lfoPhaseUser[0][0];
+            if (lfo1StaggerAmt > 0.0001f) {
+                p1 += ((float)i / 6.0f) * lfo1StaggerAmt; // up to 60° steps
+            }
+            p1 -= floorf(p1);
+            lfo1Op[i] = deformLfo(p1, lfoDeformUser[0][0]) * lfoAmpUser[0][0];
+
+            // LFO2 (per-op params + optional staggering when targeting ALL)
+            float p2 = lfo2PhaseOp[i] + lfoPhaseUser[1][i];
+            if (lfo2StaggerAmt > 0.0001f) {
+                p2 += ((float)i / 6.0f) * lfo2StaggerAmt; // up to 60° steps
+            }
+            p2 -= floorf(p2);
+            lfo2Op[i] = deformLfo(p2, lfoDeformUser[1][i]) * lfoAmpUser[1][i];
+        }
 
         // Random lane updates a few times per second, then slews smoothly
         randTimer -= dt;
@@ -543,6 +623,15 @@ struct PhaseonVoice {
             netBus = tanhf(networkBusZ * 3.60f);
         }
 
+        // Macro LFO: use LFO2 as the wobble source, scaled by the macro knob.
+        float lfoGrowlOp[kNumOps] = {};
+        if (macroLfo > 0.001f) {
+            float shape = macroLfo * macroLfo; // nonlinear: subtle low, strong high
+            for (int i = 0; i < kNumOps; ++i) {
+                lfoGrowlOp[i] = lfo2Op[i] * shape; // -shape..+shape
+            }
+        }
+
         // Clear modulation accumulators
         float phaseModAccum[kNumOps] = {};
         float depthModAccum[kNumOps] = {};
@@ -645,13 +734,24 @@ struct PhaseonVoice {
 
             // Motion drives spectral wobble (liquid, not linear)
             if (motion > 0.001f) {
-                float wobble = 0.10f * lfo2 + 0.08f * randLane + 0.02f * micro;
+                // Per-operator LFO2 response (always active; Target switch only changes edit mode)
+                float wobble = 0.10f * lfo2Op[i] + 0.08f * randLane + 0.02f * micro;
                 effectiveFmDepth *= (1.0f + motion * wobble);
             }
 
             // Chaos layer multiplies FM depth within sweet-spot bounds
             if (chaosAmount > 0.001f) {
                 effectiveFmDepth *= (1.0f + chaosValue[i]);
+            }
+
+            // Macro LFO: additional FM index wobble (PM depth). Nonlinear so
+            // low settings stay subtle while high settings become extreme.
+            if (macroLfo > 0.001f) {
+                float maxSwing = 0.30f + 1.50f * macroLfo; // 0.3..1.8
+                float delta = 1.0f + lfoGrowlOp[i] * maxSwing;
+                if (delta < 0.10f) delta = 0.10f;
+                if (delta > 3.0f)  delta = 3.0f;
+                effectiveFmDepth *= delta;
             }
 
             // Save original, apply boosted depth
@@ -666,6 +766,7 @@ struct PhaseonVoice {
             // Modulate one secondary operator field using this op's envelope.
             // The modulation is bipolar around the envelope's sustain level:
             //   (modEnv[i] - sustain) so attack phase adds, sustain is neutral, release subtracts.
+
             float origFeedback = op.feedback;
             float origPd = op.pdAmount;
             float origWsMix = op.wsMix;
@@ -705,7 +806,8 @@ struct PhaseonVoice {
 
             // Motion WT orbit drift
             if (motion > 0.001f) {
-                float orbit = 0.035f * lfo1 + 0.020f * randLane + 0.006f * micro;
+                // Per-operator LFO1 response (always active; Target switch only changes edit mode)
+                float orbit = 0.035f * lfo1Op[i] + 0.020f * randLane + 0.006f * micro;
                 fp += orbit * motion;
             }
 
@@ -716,7 +818,7 @@ struct PhaseonVoice {
             // Stereo phase spread (width without detune chorus)
             float width = 0.0f;
             if (motion > 0.001f) {
-                width = motion * (0.06f + 0.04f * (0.5f + 0.5f * lfo1));
+                width = motion * (0.06f + 0.04f * (0.5f + 0.5f * lfo1Op[i]));
             }
             op.unisonCount = (motion > 0.08f) ? 2 : 1;
             op.unisonDetune = 0.0f; // explicitly avoid chorus detune feel
@@ -769,15 +871,26 @@ struct PhaseonVoice {
         }
 
         // Sum carriers to output (carrier membership is also morphed)
+        // Per-operator envelopes (modEnv) now also gate carrier amplitude so
+        // ENV edits are clearly audible per operator.
         float sumL = 0.0f, sumR = 0.0f;
         float carrierWeightSum = 0.0f;
         for (int i = 0; i < kNumOps; ++i) {
             float cA = algoA.isCarrier[i] ? 1.0f : 0.0f;
             float cB = algoB.isCarrier[i] ? 1.0f : 0.0f;
             float cw = cA + (cB - cA) * morph;
+
+            // Macro LFO: slight carrier↔modulator drift. At low settings this
+            // just adds motion; at high settings it can tear the bass apart.
+            if (macroLfo > 0.001f) {
+                float drift = lfoGrowlOp[i] * 0.25f * macroLfo; // small, signed offset
+                cw = clamp01(cw + drift);
+            }
+
             if (cw <= 0.0001f) continue;
-            sumL += ops[i].outputL * cw;
-            sumR += ops[i].outputR * cw;
+            float envAmp = modEnv[i];
+            sumL += ops[i].outputL * cw * envAmp;
+            sumR += ops[i].outputR * cw * envAmp;
             carrierWeightSum += cw;
         }
 
@@ -809,8 +922,39 @@ struct PhaseonVoice {
             sumR *= g;
         }
 
-        outL = sumL * envLevel * masterLevel;
-        outR = sumR * envLevel * masterLevel;
+        outL = sumL * masterLevel;
+        outR = sumR * masterLevel;
+
+        // Global bitcrusher (post-FM, pre-formant). Combines sample-rate
+        // reduction (sample-and-hold) with bit-depth reduction so the effect
+        // is clearly audible from subtle to extreme.
+        if (bitcrushAmount > 0.0005f) {
+            float amt = clamp01(bitcrushAmount);
+
+            // Hold length in samples: 1 (clean) .. ~64 (strong downsample).
+            int hold = 1 + (int)std::floor(amt * 63.0f);
+            if (hold < 1) hold = 1;
+
+            if (bitcrushSamplesLeft <= 0) {
+                // Re-sample and quantize the current signal.
+                // Bit depth: 12 bits at low amt, down toward 4 bits at high amt.
+                float bits = 4.0f + (1.0f - amt) * 8.0f; // 4..12 bits
+                float levels = std::pow(2.0f, bits);
+                auto crushSample = [levels](float s) {
+                    float v = s * levels;
+                    v = std::floor(v + 0.5f);
+                    return v / levels;
+                };
+                bitcrushHoldL = crushSample(outL);
+                bitcrushHoldR = crushSample(outR);
+                bitcrushSamplesLeft = hold;
+            }
+
+            // Output held (crushed) value and count down.
+            outL = bitcrushHoldL;
+            outR = bitcrushHoldR;
+            --bitcrushSamplesLeft;
+        }
 
         // Formant shaping -- active on all families when formantAmount > 0
         processFormant(outL, outR, sampleRate);
@@ -845,6 +989,30 @@ private:
 
     static inline float lerpf(float a, float b, float t) {
         return a + (b - a) * t;
+    }
+
+    static inline float deformLfo(float phase01, float deform) {
+        const float TWO_PI = 6.283185307f;
+        // Sine
+        float sine = sinf(phase01 * TWO_PI);
+        if (deform <= 0.001f) return sine;
+        // Triangle: 4*|p-0.5| - 1
+        float tri = 4.0f * fabsf(phase01 - 0.5f) - 1.0f;
+        if (deform <= 0.333f) {
+            float t = deform * 3.0f; // 0..1
+            return sine * (1.0f - t) + tri * t;
+        }
+        // Saw: 2*p - 1
+        float saw = 2.0f * phase01 - 1.0f;
+        if (deform <= 0.666f) {
+            float t = (deform - 0.333f) * 3.0f; // 0..1
+            return tri * (1.0f - t) + saw * t;
+        }
+        // Square: sign of sine
+        float sq = (phase01 < 0.5f) ? 1.0f : -1.0f;
+        float t = (deform - 0.666f) * 3.0f; // 0..1
+        if (t > 1.0f) t = 1.0f;
+        return saw * (1.0f - t) + sq * t;
     }
 
     static inline void vowelFormants(float t01, float& f1, float& f2, float& f3) {
@@ -886,13 +1054,17 @@ private:
         float instD = powf(inst, 1.6f);
         // formantAmount self-powers the drive so formant is audible even at low EDGE
         float formD = formantAmount * formantAmount; // quadratic: subtle low, strong high
-        float drive = 0.85f * edgeD + 0.45f * motionD + 0.55f * extreme + 0.25f * instD + 0.50f * formD;
+        // Dubstep refactor: FORM should be authoritative. Other macros enhance it,
+        // but they shouldn't gate it.
+        float drive = 0.60f * edgeD + 0.30f * motionD + 0.35f * extreme + 0.20f * instD + 1.25f * formD;
         drive = clamp01(drive);
 
-        float sRaw = 0.12f + 0.95f * drive;
+        float sRaw = 0.07f + 0.78f * drive;
         float strength = clamp01(sRaw);
         // Musical curve: low stays subtle, high becomes character-defining
         strength = strength * strength;
+        // Still allow high FORM to speak, but not as overpowering.
+        strength = clamp01(strength + 0.16f * formD);
         // Scale by user formant knob (0=off, 1=full natural strength)
         cachedFormantStrength = strength * formantAmount;
 
@@ -901,7 +1073,30 @@ private:
         track = clampf(track, 0.0f, 0.80f);
 
         // Vowel selection uses vowelPos (decoupled from TIMBRE for growl control)
+        // LFO Growl modulates the vowel position to create a "talking" or "yoy" effect
         float vp = clamp01(vowelPos);
+        
+        float macroLfo = clamp01(macroLfoAmount);
+        if (macroLfo > 0.001f) {
+            float shape = macroLfo * macroLfo;
+            // Calculate LFO2 here (not passed in). Formant modulation follows OP 2's
+            // LFO2 settings (op index 1), regardless of which operator is being edited.
+            constexpr int kFormantOp = 1; // OP 2 (0-based)
+
+            float p2 = lfo2PhaseOp[kFormantOp] + lfoPhaseUser[1][kFormantOp];
+            // If Target=ALL, apply the same internal staggering (scaled by Growl).
+            // If Target=SELECT OP (edit mode), staggering is disabled.
+            if (lfoTargetOp[1] == -1) {
+                p2 += ((float)kFormantOp / 6.0f) * macroLfo;
+            }
+            p2 -= floorf(p2);
+            float lfo2 = deformLfo(p2, lfoDeformUser[1][kFormantOp]) * lfoAmpUser[1][kFormantOp];
+            
+            float lfoGrowl = lfo2 * shape;
+            // Modulate vowel position by up to +/- 0.5 (half the vowel space)
+            vp = clamp01(vp + lfoGrowl * 0.5f);
+        }
+        
         float f1, f2, f3;
         vowelFormants(vp, f1, f2, f3);
 
@@ -924,12 +1119,16 @@ private:
         if (strengthPitchAtten < 0.25f) strengthPitchAtten = 0.25f;
 
         // Q driven by vowelPos (not timbreAmount) for independent growl control
-        float qWide = 0.65f;
-        float qNarrow = 10.0f;
+        float qWide = 0.75f;
+        float qNarrow = 9.0f;
         float q = lerpf(qWide, qNarrow, powf(vp, 1.25f));
+        // Extra contrast when FORM is high (more vowel definition), but significantly tamer now.
+        q *= (1.0f + 0.25f * formD);
 
-        // Base gain in dB (subtle default, strong when pushed)
-        float gMax = lerpf(1.0f, 14.0f, strength) * strengthPitchAtten;
+        // Base gain in dB (stronger and more contrasty at high FORM)
+        float gBase = lerpf(1.0f, 10.5f, strength);
+        float gHot  = 4.0f * formD; // extra vowel bite when FORM is pushed
+        float gMax = (gBase + gHot) * strengthPitchAtten;
         float g1 = gMax * 1.00f;
         float g2 = gMax * 0.85f;
         float g3 = gMax * 0.70f;
@@ -965,7 +1164,8 @@ private:
 
         // Slight tilt interaction: bright tilt reduces boost a bit (avoids brittle highs)
         float tilt = clampf(tiltAmount, -1.0f, 1.0f);
-        float tiltGain = (tilt > 0.0f) ? (1.0f - 0.25f * tilt) : (1.0f + 0.10f * (-tilt));
+        // Dubstep: keep formant bite even when tilt is bright.
+        float tiltGain = (tilt > 0.0f) ? (1.0f - 0.12f * tilt) : (1.0f + 0.06f * (-tilt));
         g1 *= tiltGain;
         g2 *= tiltGain;
         g3 *= tiltGain;
@@ -980,7 +1180,7 @@ private:
 
     void processFormant(float& l, float& r, float sampleRate) {
         // Update coefficients at a light control rate
-        if (++formantDivider >= 32) {
+        if (++formantDivider >= 16) {
             formantDivider = 0;
             updateFormantCoeffs(sampleRate);
         }
@@ -994,6 +1194,20 @@ private:
         for (int i = 0; i < 3; ++i) {
             xl = formantL[i].process(xl);
             xr = formantR[i].process(xr);
+        }
+
+        // Controlled aggression: a touch of saturation on the formant-processed signal.
+        // Keeps vowel peaks biting without requiring runaway EQ gain.
+        float hot = clamp01(formantAmount);
+        if (hot > 0.001f) {
+            float d = 1.0f + 3.0f * hot * hot;
+            float mix = 0.05f + 0.16f * hot; // ~5%..21%
+            float norm = 1.0f / tanhf(d);
+            auto sat = [&](float x) {
+                return tanhf(x * d) * norm;
+            };
+            xl = xl * (1.0f - mix) + sat(xl) * mix;
+            xr = xr * (1.0f - mix) + sat(xr) * mix;
         }
         l = xl;
         r = xr;

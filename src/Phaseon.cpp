@@ -1,12 +1,12 @@
-﻿/*
- * Phaseon â€” FM + Wavetable monster voice for VCV Rack
+/*
+ * Phaseon — FM + Wavetable monster voice for VCV Rack
  *
  * A preset-first mono synthesizer designed for aggressive modern sounds
  * and CV-driven performance.  6 internal operators (hidden from user),
  * wavetable oscillators, curated FM algorithms, macro controls.
  *
  * Copyright (c) 2026 Bemushroomed.  All rights reserved.
- * Proprietary â€” not licensed under GPL or any open-source license.
+ * Proprietary — not licensed under GPL or any open-source license.
  */
 
 #include "plugin.hpp"
@@ -32,6 +32,42 @@
 #endif
 
 using namespace phaseon;
+
+struct Phaseon;
+
+// Custom quantity: show waveform name or semitone offset depending on OP Wav/Freq switch.
+struct OpEditParamQuantity : ParamQuantity {
+    std::string getDisplayValueString() override;
+};
+
+// Custom quantity: show "Waveform" or "Freq" instead of 0/1.
+struct OpWfModeParamQuantity : ParamQuantity {
+    std::string getDisplayValueString() override;
+};
+
+// Custom quantity: show "LFO 1" / "LFO 2" / "ENV" for the LFO select switch.
+struct LfoSelectParamQuantity : ParamQuantity {
+    std::string getDisplayValueString() override {
+        float v = getValue();
+        if (v < 0.5f)
+            return "LFO 1";
+        if (v < 1.5f)
+            return "LFO 2";
+        return "ENV";
+    }
+};
+
+// Custom quantity: show LFO rate as multiplier/divider
+struct LfoRateParamQuantity : ParamQuantity {
+    std::string getDisplayValueString() override;
+};
+
+// Custom quantity: show "All Ops" or "Selected Op" for the LFO target switch.
+struct LfoTargetParamQuantity : ParamQuantity {
+    std::string getDisplayValueString() override {
+        return (getValue() > 0.5f) ? "Selected Op" : "All Ops";
+    }
+};
 
 struct Phaseon : Module {
     enum ParamId {
@@ -67,12 +103,37 @@ struct Phaseon : Module {
         MOD_MUT_PARAM,
         MOD_AMT_PARAM,
         WARP_MODE_PARAM,
-
         // Per-operator waveform editing
         EDIT_OP_PARAM,
         OP_WAVE_PARAM,
 
         TAMING_PARAM,
+
+        // Feedback spice: scales operator self-feedback (and can add a touch of carrier feedback)
+        FEEDBACK_BOOST_PARAM,
+
+        // Per-operator frequency editing (stored per op; this param edits selected op)
+        OP_FREQ_PARAM,
+
+        // OP Wav/Freq switch
+        OP_WF_MODE_PARAM,
+
+        // LFO controls (Surge-style Rate/Phase/Deform/Amp)
+        LFO_RATE_PARAM,
+        LFO_PHASE_PARAM,
+        LFO_DEFORM_PARAM,
+        LFO_AMP_PARAM,
+        LFO_SELECT_PARAM,      // switch: 0=LFO1, 1=LFO2
+        LFO_TARGET_PARAM,      // switch: 0=ALL, 1=OP
+        LFO_OP_SELECT_PARAM,   // 1..6 when target=OP
+
+        // Per-operator level trims ("VOLUME" for each operator)
+        OP1_LEVEL_TRIM_PARAM,
+        OP2_LEVEL_TRIM_PARAM,
+        OP3_LEVEL_TRIM_PARAM,
+        OP4_LEVEL_TRIM_PARAM,
+        OP5_LEVEL_TRIM_PARAM,
+        OP6_LEVEL_TRIM_PARAM,
         PARAMS_LEN
     };
     enum InputId {
@@ -80,16 +141,16 @@ struct Phaseon : Module {
         VOCT_INPUT,
         TIMBRE_CV,
         HARM_DENSITY_CV,
-        WT_SELECT_CV,       // was FM_CHAOS_CV  â€” bipolar Â±5V selects WT family Â±1 step
-        TIMBRE2_CV,         // was TRANSIENT_SPIKE_CV â€” perf timbre CV (stacks with I/O timbre)
+        WT_SELECT_CV,       // was FM_CHAOS_CV  — bipolar ±5V selects WT family ±1 step
+        TIMBRE2_CV,         // was TRANSIENT_SPIKE_CV — perf timbre CV (stacks with I/O timbre)
         WT_REGION_BIAS_CV,
         SPECTRAL_TILT_CV,
-        MOTION_CV,          // was INSTABILITY_CV â€” CV adds to motion amount
-        FORMANT_CV,         // replaces LOOP_RATE_CV â€” Â±5V formant intensity
-        ENV_SPREAD_CV,      // new â€” 0..10V adds to env spread knob
-        EDGE_CV,            // new â€” 0..10V adds to edge knob
-        COMPLEXITY_CV,      // new â€” 0..10V adds to complexity knob
-        MORPH_CV,           // new â€” Â±5V adds to algorithm morph knob
+        MOTION_CV,          // was INSTABILITY_CV — CV adds to motion amount
+        FORMANT_CV,         // replaces LOOP_RATE_CV — ±5V formant intensity
+        ENV_SPREAD_CV,      // new — 0..10V adds to env spread knob
+        EDGE_CV,            // new — 0..10V adds to edge knob
+        COMPLEXITY_CV,      // new — 0..10V adds to complexity knob
+        MORPH_CV,           // new — ±5V adds to algorithm morph knob
         CLOCK_INPUT,        // clock input -- rising edge sets LFO1 period
         INPUTS_LEN
     };
@@ -110,7 +171,7 @@ struct Phaseon : Module {
     };
 #endif
 
-    // â”€â”€ DSP engine â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── DSP engine ──────────────────────────────────────────────────
     PhaseonVoice voice;
     PhaseonMacroState macros;
     SpectralTilt tiltFilter;
@@ -258,7 +319,7 @@ struct Phaseon : Module {
         statusSecondsLeft = 6.0f;
     }
 
-    // â”€â”€ State â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── State ───────────────────────────────────────────────────────
     bool lastGate = false;
     float lastPitch = 0.0f;
     float slewedVoct = 0.0f;    // current smoothed V/Oct (only slews during legato)
@@ -281,6 +342,11 @@ struct Phaseon : Module {
     float clockTimer = 0.0f;        // time since last rising edge
     float clockPeriodSmoothed = 0.0f; // slewed measurement for stability
 
+    // BITCRUSH knob coupling: cap bitcrush depth and add a strong high-cut filter.
+    float bitcrushKnob01 = 0.0f;          // 0..1 (raw knob)
+    float bitcrushFilter01 = 0.0f;        // 0..1 (filter amount derived from knob)
+    float bitcrushLpPrevL = 0.0f, bitcrushLpPrevR = 0.0f;
+
     // Mod matrix randomize/mutate button edges
     bool lastModRnd = false;
     bool lastModMut = false;
@@ -295,6 +361,22 @@ struct Phaseon : Module {
 
         // Per-operator waveform mode (0=WT, 1=Sine, 2=Triangle, 3=Saw, 4=Harmonic Sine, 5=Skewed Sine)
         std::array<uint8_t, 6> opWaveMode{};
+
+        // Per-operator ratio semitone offsets (applied on top of the current ratio set)
+        std::array<float, 6> opFreqSemi{};
+
+        // Per-LFO settings (2 LFOs, per-operator)
+        float lfoRateOp[2][6]        = { {0.5f,0.5f,0.5f,0.5f,0.5f,0.5f}, {0.5f,0.5f,0.5f,0.5f,0.5f,0.5f} };
+        float lfoPhaseOffsetOp[2][6] = { {0.0f,0.0f,0.0f,0.0f,0.0f,0.0f}, {0.0f,0.0f,0.0f,0.0f,0.0f,0.0f} };
+        float lfoDeformOp[2][6]      = { {0.0f,0.0f,0.0f,0.0f,0.0f,0.0f}, {0.0f,0.0f,0.0f,0.0f,0.0f,0.0f} };
+        float lfoAmpOp[2][6]         = { {1.0f,1.0f,1.0f,1.0f,1.0f,1.0f}, {1.0f,1.0f,1.0f,1.0f,1.0f,1.0f} };
+        int   lfoTargetOp[2]         = {-1, -1};  // -1=ALL, 0..5=operator
+
+        // Per-operator ENV edit shapes (0..1, 0.5 = neutral)
+        float envAtkShape[6]         = {0.5f,0.5f,0.5f,0.5f,0.5f,0.5f};
+        float envDecShape[6]         = {0.5f,0.5f,0.5f,0.5f,0.5f,0.5f};
+        float envSusShape[6]         = {0.5f,0.5f,0.5f,0.5f,0.5f,0.5f};
+        float envRelShape[6]         = {0.5f,0.5f,0.5f,0.5f,0.5f,0.5f};
         bool used = false;
     };
     std::array<PresetSlot, kPresetSlots> bank;
@@ -307,7 +389,30 @@ struct Phaseon : Module {
     // Per-operator waveform mode (persisted via patch JSON + preset bank)
     // 0=WT, 1=Sine, 2=Triangle, 3=Saw, 4=Harmonic Sine, 5=Skewed Sine
     std::array<uint8_t, 6> opWaveMode{};
+
+    // Per-operator semitone offsets for ratio tuning (persisted via patch JSON + preset bank)
+    std::array<float, 6> opFreqSemi{};
     int lastEditOp = 0;
+    int lastOpWfMode = -1;
+
+    // Per-LFO settings (2 LFOs, per-operator): Rate / Phase / Deform / Amp / TargetOp
+    // For LFO1, values are typically kept identical across operators.
+    float lfoRateOp[2][6]        = { {0.5f,0.5f,0.5f,0.5f,0.5f,0.5f}, {0.5f,0.5f,0.5f,0.5f,0.5f,0.5f} };
+    float lfoPhaseOffsetOp[2][6] = { {0.0f,0.0f,0.0f,0.0f,0.0f,0.0f}, {0.0f,0.0f,0.0f,0.0f,0.0f,0.0f} };
+    float lfoDeformOp[2][6]      = { {0.0f,0.0f,0.0f,0.0f,0.0f,0.0f}, {0.0f,0.0f,0.0f,0.0f,0.0f,0.0f} };
+    float lfoAmpOp[2][6]         = { {1.0f,1.0f,1.0f,1.0f,1.0f,1.0f}, {1.0f,1.0f,1.0f,1.0f,1.0f,1.0f} };
+    int   lfoTargetOp[2]         = {-1, -1};
+
+    // LFO/ENV edit state: 3-way mode (0=LFO1, 1=LFO2, 2=ENV) + last edited operator in ENV/LFO modes
+    int   lastLfoMode       = -1;
+    int   lastEnvEditOp     = 0;
+    int   lastLfoEditOp[2]  = {-1, -1}; // -1 = ALL, 0..5 = OP
+
+    // Per-operator ENV edit shapes (0..1, 0.5 = neutral)
+    float envAtkShape[6]    = {0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f};
+    float envDecShape[6]    = {0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f};
+    float envSusShape[6]    = {0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f};
+    float envRelShape[6]    = {0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f};
 
     static inline float clamp01(float x) {
         if (x < 0.0f) return 0.0f;
@@ -404,7 +509,7 @@ struct Phaseon : Module {
         if (random::uniform() < 0.18f * hi) {
             const std::array<std::pair<phaseon::ModDest, float>, 3> spicy = {
                 std::make_pair(phaseon::ModDest::Instability,    1.0f),
-                std::make_pair(phaseon::ModDest::SpikeIntensity, 0.8f),
+                std::make_pair(phaseon::ModDest::BitcrushAmount, 0.8f),
                 std::make_pair(phaseon::ModDest::ChaosAmount,    0.6f),
             };
             return pickWeighted(spicy);
@@ -782,6 +887,19 @@ struct Phaseon : Module {
                         s.params[p] = (float)json_number_value(vJ);
                     }
                 }
+
+                // Migration: older bank versions don't include the new OPx level trim params.
+                // If missing, default to 1.0 (neutral), not 0.0 (silence).
+                auto setIfMissing = [&](int paramId, float def) {
+                    if (paramId >= pn)
+                        s.params[paramId] = def;
+                };
+                setIfMissing(OP1_LEVEL_TRIM_PARAM, 1.0f);
+                setIfMissing(OP2_LEVEL_TRIM_PARAM, 1.0f);
+                setIfMissing(OP3_LEVEL_TRIM_PARAM, 1.0f);
+                setIfMissing(OP4_LEVEL_TRIM_PARAM, 1.0f);
+                setIfMissing(OP5_LEVEL_TRIM_PARAM, 1.0f);
+                setIfMissing(OP6_LEVEL_TRIM_PARAM, 1.0f);
             }
 
             // Per-operator waveform mode (introduced in bank version 3)
@@ -794,9 +912,98 @@ struct Phaseon : Module {
                         continue;
                     int v = (int)json_integer_value(vJ);
                     if (v < 0) v = 0;
-                    if (v > 5) v = 5;
+                    if (v > 8) v = 8;
                     s.opWaveMode[oi] = (uint8_t)v;
                 }
+            }
+
+            // Per-operator frequency semitone offsets (introduced in bank version 4)
+            json_t* ofJ = json_object_get(slotJ, "opFreq");
+            if (ofJ && json_is_array(ofJ)) {
+                int on = (int)json_array_size(ofJ);
+                for (int oi = 0; oi < 6 && oi < on; ++oi) {
+                    json_t* vJ = json_array_get(ofJ, oi);
+                    if (!vJ || !json_is_number(vJ))
+                        continue;
+                    float v = (float)json_number_value(vJ);
+                    if (v < -24.0f) v = -24.0f;
+                    if (v >  24.0f) v =  24.0f;
+                    s.opFreqSemi[oi] = v;
+                }
+            }
+
+            // Per-LFO settings (introduced in bank version 5; per-operator since version 6)
+            {
+                auto readNested = [&](const char* key, float dst[2][6], float lo, float hi) {
+                    json_t* aJ = json_object_get(slotJ, key);
+                    if (!aJ || !json_is_array(aJ))
+                        return;
+
+                    int an = (int)json_array_size(aJ);
+                    for (int li = 0; li < 2 && li < an; ++li) {
+                        json_t* vJ = json_array_get(aJ, li);
+                        if (!vJ)
+                            continue;
+                        if (json_is_number(vJ)) {
+                            float v = (float)json_number_value(vJ);
+                            if (v < lo) v = lo;
+                            if (v > hi) v = hi;
+                            for (int oi = 0; oi < 6; ++oi)
+                                dst[li][oi] = v;
+                        }
+                        else if (json_is_array(vJ)) {
+                            int on = (int)json_array_size(vJ);
+                            for (int oi = 0; oi < 6 && oi < on; ++oi) {
+                                json_t* eJ = json_array_get(vJ, oi);
+                                if (!eJ || !json_is_number(eJ))
+                                    continue;
+                                float v = (float)json_number_value(eJ);
+                                if (v < lo) v = lo;
+                                if (v > hi) v = hi;
+                                dst[li][oi] = v;
+                            }
+                        }
+                    }
+                };
+
+                readNested("lfoRate",   s.lfoRateOp,        0.0f, 1.0f);
+                readNested("lfoPhase",  s.lfoPhaseOffsetOp, 0.0f, 1.0f);
+                readNested("lfoDeform", s.lfoDeformOp,      0.0f, 1.0f);
+                readNested("lfoAmp",    s.lfoAmpOp,         0.0f, 1.0f);
+
+                json_t* ltJ = json_object_get(slotJ, "lfoTarget");
+                if (ltJ && json_is_array(ltJ)) {
+                    int an2 = (int)json_array_size(ltJ);
+                    for (int li = 0; li < 2 && li < an2; ++li) {
+                        json_t* eJ = json_array_get(ltJ, li);
+                        if (eJ && json_is_integer(eJ)) {
+                            int v = (int)json_integer_value(eJ);
+                            if (v < -1) v = -1;
+                            if (v > 5) v = 5;
+                            s.lfoTargetOp[li] = v;
+                        }
+                    }
+                }
+            }
+
+            // Per-operator ENV ADSR shapes (optional; available since bank version 7)
+            {
+                auto readEnv = [&](const char* key, float* dst) {
+                    json_t* aJ = json_object_get(slotJ, key);
+                    if (!aJ || !json_is_array(aJ))
+                        return;
+                    int n2 = (int)json_array_size(aJ);
+                    for (int oi = 0; oi < 6 && oi < n2; ++oi) {
+                        json_t* vJ = json_array_get(aJ, oi);
+                        if (!vJ || !json_is_number(vJ))
+                            continue;
+                        dst[oi] = clamp01((float)json_number_value(vJ));
+                    }
+                };
+                readEnv("envAtkShape", s.envAtkShape);
+                readEnv("envDecShape", s.envDecShape);
+                readEnv("envSusShape", s.envSusShape);
+                readEnv("envRelShape", s.envRelShape);
             }
         }
 
@@ -808,7 +1015,7 @@ struct Phaseon : Module {
     bool bankSave() {
         json_t* root = json_object();
         json_object_set_new(root, "format", json_string("MorphWorx.PhaseonBank"));
-        json_object_set_new(root, "version", json_integer(3));
+        json_object_set_new(root, "version", json_integer(8));
 
         json_t* slotsJ = json_array();
         for (int i = 0; i < kPresetSlots; ++i) {
@@ -833,6 +1040,64 @@ struct Phaseon : Module {
                     json_array_append_new(owJ, json_integer((int)s.opWaveMode[oi]));
                 }
                 json_object_set_new(slotJ, "opWaveMode", owJ);
+            }
+
+            // Per-operator frequency semitone offsets
+            {
+                json_t* ofJ = json_array();
+                for (int oi = 0; oi < 6; ++oi) {
+                    json_array_append_new(ofJ, json_real((double)s.opFreqSemi[oi]));
+                }
+                json_object_set_new(slotJ, "opFreq", ofJ);
+            }
+
+            // Per-LFO settings (per-operator)
+            {
+                json_t* lrJ = json_array();
+                json_t* lpJ = json_array();
+                json_t* ldJ = json_array();
+                json_t* laJ = json_array();
+                json_t* ltJ = json_array();
+                for (int li = 0; li < 2; ++li) {
+                    json_t* lrOpJ = json_array();
+                    json_t* lpOpJ = json_array();
+                    json_t* ldOpJ = json_array();
+                    json_t* laOpJ = json_array();
+                    for (int oi = 0; oi < 6; ++oi) {
+                        json_array_append_new(lrOpJ, json_real((double)s.lfoRateOp[li][oi]));
+                        json_array_append_new(lpOpJ, json_real((double)s.lfoPhaseOffsetOp[li][oi]));
+                        json_array_append_new(ldOpJ, json_real((double)s.lfoDeformOp[li][oi]));
+                        json_array_append_new(laOpJ, json_real((double)s.lfoAmpOp[li][oi]));
+                    }
+                    json_array_append_new(lrJ, lrOpJ);
+                    json_array_append_new(lpJ, lpOpJ);
+                    json_array_append_new(ldJ, ldOpJ);
+                    json_array_append_new(laJ, laOpJ);
+                    json_array_append_new(ltJ, json_integer(s.lfoTargetOp[li]));
+                }
+                json_object_set_new(slotJ, "lfoRate", lrJ);
+                json_object_set_new(slotJ, "lfoPhase", lpJ);
+                json_object_set_new(slotJ, "lfoDeform", ldJ);
+                json_object_set_new(slotJ, "lfoAmp", laJ);
+                json_object_set_new(slotJ, "lfoTarget", ltJ);
+            }
+
+            // Per-operator ENV ADSR shapes
+            {
+                json_t* aJ = json_array();
+                json_t* dJ = json_array();
+                json_t* suJ = json_array();
+                json_t* rJ = json_array();
+                for (int oi = 0; oi < 6; ++oi) {
+                    json_array_append_new(aJ, json_real((double)s.envAtkShape[oi]));
+                    json_array_append_new(dJ, json_real((double)s.envDecShape[oi]));
+                    json_array_append_new(suJ, json_real((double)s.envSusShape[oi]));
+                    json_array_append_new(rJ, json_real((double)s.envRelShape[oi]));
+                }
+                json_object_set_new(slotJ, "envAtkShape", aJ);
+                json_object_set_new(slotJ, "envDecShape", dJ);
+                json_object_set_new(slotJ, "envSusShape", suJ);
+                json_object_set_new(slotJ, "envRelShape", rJ);
             }
 
             json_t* paramsJ = json_array();
@@ -893,6 +1158,26 @@ struct Phaseon : Module {
 
         for (int oi = 0; oi < 6; ++oi) {
             s.opWaveMode[oi] = opWaveMode[oi];
+            s.opFreqSemi[oi] = opFreqSemi[oi];
+        }
+
+        // Capture per-LFO settings into preset slot
+        for (int li = 0; li < 2; ++li) {
+            for (int oi = 0; oi < 6; ++oi) {
+                s.lfoRateOp[li][oi]        = lfoRateOp[li][oi];
+                s.lfoPhaseOffsetOp[li][oi] = lfoPhaseOffsetOp[li][oi];
+                s.lfoDeformOp[li][oi]      = lfoDeformOp[li][oi];
+                s.lfoAmpOp[li][oi]         = lfoAmpOp[li][oi];
+            }
+            s.lfoTargetOp[li] = lfoTargetOp[li];
+        }
+
+        // Capture per-operator ENV ADSR shapes into preset slot
+        for (int oi = 0; oi < 6; ++oi) {
+            s.envAtkShape[oi] = envAtkShape[oi];
+            s.envDecShape[oi] = envDecShape[oi];
+            s.envSusShape[oi] = envSusShape[oi];
+            s.envRelShape[oi] = envRelShape[oi];
         }
         updatePresetDisplayName();
     }
@@ -970,11 +1255,35 @@ struct Phaseon : Module {
             // Restore per-operator waveform modes (available since bank version 3)
             for (int oi = 0; oi < 6; ++oi) {
                 opWaveMode[oi] = s.opWaveMode[oi];
+                opFreqSemi[oi] = s.opFreqSemi[oi];
+            }
+
+            // Restore per-LFO settings from preset
+            for (int li = 0; li < 2; ++li) {
+                for (int oi = 0; oi < 6; ++oi) {
+                    lfoRateOp[li][oi]        = s.lfoRateOp[li][oi];
+                    lfoPhaseOffsetOp[li][oi] = s.lfoPhaseOffsetOp[li][oi];
+                    lfoDeformOp[li][oi]      = s.lfoDeformOp[li][oi];
+                    lfoAmpOp[li][oi]         = s.lfoAmpOp[li][oi];
+                }
+                lfoTargetOp[li] = s.lfoTargetOp[li];
+            }
+
+            // Restore per-operator ENV ADSR shapes from preset
+            for (int oi = 0; oi < 6; ++oi) {
+                envAtkShape[oi] = s.envAtkShape[oi];
+                envDecShape[oi] = s.envDecShape[oi];
+                envSusShape[oi] = s.envSusShape[oi];
+                envRelShape[oi] = s.envRelShape[oi];
             }
 
             // Force UI resync so OP_WAVE_PARAM reflects the selected operator's stored mode.
             // Without this, the just-loaded OP_WAVE_PARAM value can overwrite opWaveMode.
-            lastEditOp = -1;
+            lastEditOp   = -1;
+            lastLfoMode  = -1;
+            lastEnvEditOp = 0;
+            lastLfoEditOp[0] = -1;
+            lastLfoEditOp[1] = -1;
 
             params[PANIC_PARAM].setValue(0.0f);
             params[ROLE_SHUFFLE_PARAM].setValue(0.0f);
@@ -996,9 +1305,9 @@ struct Phaseon : Module {
         controlDivider = kControlRate;
     }
 
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // ════════════════════════════════════════════════════════════════
     // Constructor
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // ════════════════════════════════════════════════════════════════
     Phaseon() {
         config(PARAMS_LEN, INPUTS_LEN, OUTPUTS_LEN, LIGHTS_LEN);
 
@@ -1018,10 +1327,12 @@ struct Phaseon : Module {
         configParam(ENV_STYLE_PARAM,    0.f, 1.f, 0.0f,  "Env Style (Scene Morph)");
         paramQuantities[ENV_STYLE_PARAM]->displayMultiplier = 4.0f;
         configParam(ENV_SPREAD_PARAM,   0.f, 1.f, 1.0f,  "Env Spread");
-        configParam(SPIKE_PARAM,        0.f, 1.f, 0.0f,  "Punch (FM Click)");
+        // Repurposed: global bitcrusher amount (0 = clean, 1 = heavy crush)
+        configParam(SPIKE_PARAM,        0.f, 1.f, 0.0f,  "Bitcrush Amount");
         configButton(ROLE_SHUFFLE_PARAM, "Role Shuffle");
 
-        configParam(TAIL_PARAM,         0.f, 1.f, 0.73f, "Tail (Release Length)");
+        // Repurposed: macro growl LFO amount
+        configParam(TAIL_PARAM,         0.f, 1.f, 0.0f,  "LFO (Growl)");
 
         // Drift: combined Chaos + Instability (was WT Family)
         configParam(DRIFT_PARAM,        0.f, 1.f, 0.0f,  "Drift (Chaos + Instability)");
@@ -1030,7 +1341,7 @@ struct Phaseon : Module {
         configParam(NETWORK_PARAM,      0.f, 1.f, 0.0f,   "Network (Cross Mod)");
 
         // Explicit wavetable selector (snapped index into the loaded wavetable bank)
-        // Stored by name in the PhaseonBank for VCV â†” MetaModule portability.
+        // Stored by name in the PhaseonBank for VCV ↔ MetaModule portability.
         // Keep the selection range tight so the knob acts like a selector,
         // not a "volume" that clamps to the last table.
         // Current built-in bank indices are 0..10 (see PhaseonWavetable.cpp).
@@ -1038,22 +1349,40 @@ struct Phaseon : Module {
         paramQuantities[WT_SELECT_PARAM]->snapEnabled = true;
 
         // SCRAMBLE: per-operator envelope diversity
-        // 0 = uniform (current behavior), 1 = wildly different per-operator envelopes
-        configParam(SCRAMBLE_PARAM,     0.f, 1.f, 0.f,    "Scramble");
+        // 0..1 = legacy range, 1..2 = extended "more extreme" range, 2..3 = ultra
+        configParam(SCRAMBLE_PARAM,     0.f, 3.f, 0.f,    "Scramble");
 
         // Warp mode: selects phase remapping function (Serum-style).
         // COMPLEX controls warp depth; this selects the warp shape.
-        configParam(WARP_MODE_PARAM,    0.f, 5.f, 0.f,    "Warp Mode");
+        configParam(WARP_MODE_PARAM,    0.f, 6.f, 0.f,    "Warp Mode");
         paramQuantities[WARP_MODE_PARAM]->snapEnabled = true;
 
-        // Per-operator waveform editing
+        // Per-operator waveform/frequency editing
         configParam(EDIT_OP_PARAM, 1.f, 6.f, 1.f, "Edit Operator");
         paramQuantities[EDIT_OP_PARAM]->snapEnabled = true;
-        configParam(OP_WAVE_PARAM, 0.f, 5.f, 0.f, "Operator Waveform");
-        paramQuantities[OP_WAVE_PARAM]->snapEnabled = true;
+        // Shared edit knob: normalized 0..1. In WAVE mode this selects
+        // discrete waveforms 0..8; in FREQ mode it selects semitone
+        // offsets -24..+24. Mapping is handled in OpEditParamQuantity
+        // and in the control-rate processing below.
+        configParam<OpEditParamQuantity>(OP_WAVE_PARAM, 0.f, 1.f, 0.f, "Operator");
+        // Do not use built-in snapping here; we implement our own quantization
+        // so that the full 0..1 travel is evenly divided across all modes.
+        paramQuantities[OP_WAVE_PARAM]->snapEnabled = false;
+
+        // 2-way switch: 0=WAV, 1=FREQ
+        configParam<OpWfModeParamQuantity>(OP_WF_MODE_PARAM, 0.f, 1.f, 0.f, "Op Wav/Freq");
+        paramQuantities[OP_WF_MODE_PARAM]->snapEnabled = true;
+
+        // Per-operator frequency editing: semitone offset applied to selected operator ratio.
+        configParam(OP_FREQ_PARAM, -24.f, 24.f, 0.f, "Operator Freq");
+        paramQuantities[OP_FREQ_PARAM]->snapEnabled = true;
 
         // TAME: global softener for harshness/clipping
         configParam(TAMING_PARAM, 0.f, 1.f, 0.f, "Tame");
+
+        // Feedback boost: drastic timbre changes with essentially no added CPU.
+        // 0..1 = normal range, 1..2 = extra headroom.
+        configParam(FEEDBACK_BOOST_PARAM, 0.f, 2.f, 0.f, "Feedback Boost");
 
         // Mod matrix amount knobs (bipolar; source/dest/target/slew set via right-click menu)
         configParam(MOD1_AMT_PARAM,    -1.f, 1.f, 0.f, "Mod 1 Amount");
@@ -1069,6 +1398,27 @@ struct Phaseon : Module {
         configButton(MOD_MUT_PARAM, "Mod Matrix Mutate");
         configParam(MOD_AMT_PARAM,       0.f,  1.f, 0.45f, "Mod Matrix Amount");
 
+        // LFO / ENV controls
+        // Shared trimpots: in LFO modes they edit Rate/Phase/Deform/Amp; in ENV mode they edit Attack/Decay/Sustain/Release.
+        configParam<LfoRateParamQuantity>(LFO_RATE_PARAM,     0.f, 1.f, 0.5f, "LFO/ENV A");
+        configParam(LFO_PHASE_PARAM,    0.f, 1.f, 0.0f, "LFO/ENV D");
+        configParam(LFO_DEFORM_PARAM,   0.f, 1.f, 0.5f, "LFO/ENV S");
+        configParam(LFO_AMP_PARAM,      0.f, 1.f, 0.5f, "LFO/ENV R");
+        configParam<LfoSelectParamQuantity>(LFO_SELECT_PARAM, 0.f, 2.f, 0.f, "LFO / ENV Select");
+        paramQuantities[LFO_SELECT_PARAM]->snapEnabled = true;
+        configParam<LfoTargetParamQuantity>(LFO_TARGET_PARAM, 0.f, 1.f, 0.f, "LFO/ENV Target");
+        paramQuantities[LFO_TARGET_PARAM]->snapEnabled = true;
+        configParam(LFO_OP_SELECT_PARAM, 1.f, 6.f, 1.f, "LFO/ENV Op Select");
+        paramQuantities[LFO_OP_SELECT_PARAM]->snapEnabled = true;
+
+        // Per-operator level trims (0..1, default 1.0)
+        configParam(OP1_LEVEL_TRIM_PARAM, 0.f, 1.f, 1.f, "OP1 Level");
+        configParam(OP2_LEVEL_TRIM_PARAM, 0.f, 1.f, 1.f, "OP2 Level");
+        configParam(OP3_LEVEL_TRIM_PARAM, 0.f, 1.f, 1.f, "OP3 Level");
+        configParam(OP4_LEVEL_TRIM_PARAM, 0.f, 1.f, 1.f, "OP4 Level");
+        configParam(OP5_LEVEL_TRIM_PARAM, 0.f, 1.f, 1.f, "OP5 Level");
+        configParam(OP6_LEVEL_TRIM_PARAM, 0.f, 1.f, 1.f, "OP6 Level");
+
         // Preset bank browsing (screen buttons)
         configButton(PRESET_PREV_PARAM, "Preset Prev");
         configButton(PRESET_NEXT_PARAM, "Preset Next");
@@ -1080,11 +1430,11 @@ struct Phaseon : Module {
         configInput(GATE_INPUT,          "Gate");
         configInput(VOCT_INPUT,          "V/Oct");
         configInput(TIMBRE_CV,           "Timbre CV");
-        configInput(HARM_DENSITY_CV,     "Harmonic Density CV");
+        configInput(HARM_DENSITY_CV,     "Density CV");
         configInput(WT_SELECT_CV,        "WT Select CV");
         configInput(TIMBRE2_CV,          "Timbre CV (Perf)");
         configInput(WT_REGION_BIAS_CV,   "WT Region Bias CV");
-        configInput(SPECTRAL_TILT_CV,    "Spectral Tilt CV");
+        configInput(SPECTRAL_TILT_CV,    "Filter (Tilt) CV");
         configInput(MOTION_CV,           "Motion CV");
         configInput(FORMANT_CV,          "Formant CV");
         configInput(ENV_SPREAD_CV,       "Env Spread CV");
@@ -1101,22 +1451,25 @@ struct Phaseon : Module {
         configLight(GATE_LIGHT, "Gate indicator");
     }
 
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // ════════════════════════════════════════════════════════════════
     // Lifecycle
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // ════════════════════════════════════════════════════════════════
     void onAdd() override {
         if (!engineReady) {
             // Generate built-in wavetables
             wavetableBank.generateBuiltins();
 
             // Append user wavetables (folder-scanned) after builtins.
-            // Preset-bank portability VCV â†” MetaModule depends on having the same
+            // Preset-bank portability VCV ↔ MetaModule depends on having the same
             // wavetable filenames available on both systems.
             loadUserWavetablesOnce();
 
             voice.reset();
             tiltFilter.reset();
             polish.reset();
+            bitcrushKnob01 = 0.0f;
+            bitcrushFilter01 = 0.0f;
+            bitcrushLpPrevL = bitcrushLpPrevR = 0.0f;
             engineReady = true;
         }
 
@@ -1128,6 +1481,9 @@ struct Phaseon : Module {
         voice.reset();
         tiltFilter.reset();
         polish.reset();
+        bitcrushKnob01 = 0.0f;
+        bitcrushFilter01 = 0.0f;
+        bitcrushLpPrevL = bitcrushLpPrevR = 0.0f;
         lastGate = false;
         presetName = "Init";
         roleSeed = 0xC0FFEE11u;
@@ -1140,14 +1496,42 @@ struct Phaseon : Module {
         clockTimer = 0.0f;
         clockPeriodSmoothed = 0.0f;
 
+        for (int oi = 0; oi < 6; ++oi) {
+            opWaveMode[oi] = 0;
+            opFreqSemi[oi] = 0.0f;
+        }
+
+        // Reset LFO settings to defaults
+        for (int li = 0; li < 2; ++li) {
+            for (int oi = 0; oi < 6; ++oi) {
+                lfoRateOp[li][oi]        = 0.5f;
+                lfoPhaseOffsetOp[li][oi] = 0.0f;
+                lfoDeformOp[li][oi]      = 0.0f;
+                lfoAmpOp[li][oi]         = 1.0f;
+            }
+            lfoTargetOp[li]    = -1;
+            lastLfoEditOp[li]  = -1;
+        }
+
+        // Reset ENV edit shapes to neutral
+        for (int oi = 0; oi < 6; ++oi) {
+            envAtkShape[oi] = 0.5f;
+            envDecShape[oi] = 0.5f;
+            envSusShape[oi] = 0.5f;
+            envRelShape[oi] = 0.5f;
+        }
+
+        lastLfoMode   = -1;
+        lastEnvEditOp = 0;
+
         bankEnsureLoaded();
         currentPreset = 0;
         bankApplySlot(currentPreset, false);
     }
 
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // ════════════════════════════════════════════════════════════════
     // Process
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // ════════════════════════════════════════════════════════════════
     void process(const ProcessArgs& args) override {
         if (!engineReady) {
             outputs[LEFT_OUTPUT].setVoltage(0.f);
@@ -1157,10 +1541,10 @@ struct Phaseon : Module {
 
         // Bank loading is handled in onAdd()/preset actions; avoid any I/O in the audio thread.
 
-        // â”€â”€ Gate handling (needed for immediate SHUFFLE re-voicing) â”€
+        // ── Gate handling (needed for immediate SHUFFLE re-voicing) ─
         bool gate = inputs[GATE_INPUT].getVoltage() > 1.0f;
 
-        // â”€â”€ Preset bank browse/save (screen buttons) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ── Preset bank browse/save (screen buttons) ─────────────
         // Prev/Next browse. Press BOTH together to save to current slot.
         {
             bool prev = params[PRESET_PREV_PARAM].getValue() > 0.5f;
@@ -1193,7 +1577,7 @@ struct Phaseon : Module {
             lastPresetNext = next;
         }
 
-        // â”€â”€ Role shuffle button (applies on next note-on) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ── Role shuffle button (applies on next note-on) ───────────
         {
             bool sh = params[ROLE_SHUFFLE_PARAM].getValue() > 0.5f;
             if (sh && !lastShuffle) {
@@ -1208,9 +1592,9 @@ struct Phaseon : Module {
                 }
 
                 // Shuffle burst: temporary chaos + spike for a dramatic transition
-                shuffleBurstTimer = 0.20f; // 200ms
+                shuffleBurstTimer = 0.35f; // 350ms
                 if (gate && voice.isActive()) {
-                    voice.chaosAmount = 0.60f;
+                    voice.chaosAmount = 0.85f;
                     voice.spike.intensity = 0.40f;
                     voice.spike.trigger();
                 }
@@ -1218,7 +1602,7 @@ struct Phaseon : Module {
             lastShuffle = sh;
         }
 
-        // â”€â”€ Mod matrix randomize/mutate (panel buttons) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ── Mod matrix randomize/mutate (panel buttons) ───────────
         {
             float amt01 = clamp01(params[MOD_AMT_PARAM].getValue());
             bool rnd = params[MOD_RND_PARAM].getValue() > 0.5f;
@@ -1239,9 +1623,9 @@ struct Phaseon : Module {
             lastModMut = mut;
         }
 
-        // â”€â”€ Gate handling â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ── Gate handling ───────────────────────────────────────────
         if (gate && !lastGate) {
-            // Note on — snap pitch instantly (no glide on attack)
+            // Note on � snap pitch instantly (no glide on attack)
             float voct = inputs[VOCT_INPUT].getVoltage();
             slewedVoct = voct;  // snap to target, no slew
             float freq = 261.63f * powf(2.0f, voct); // C4 = 0V
@@ -1256,7 +1640,7 @@ struct Phaseon : Module {
         } else if (!gate && lastGate) {
             voice.noteOff();
         } else if (gate) {
-            // Legato pitch update — slew in V/Oct domain for musical glide
+            // Legato pitch update � slew in V/Oct domain for musical glide
             float voct = inputs[VOCT_INPUT].getVoltage();
             // ~45ms exponential slew (smooth portamento in pitch space)
             const float slewCoeff = 1.0f - expf(-1.0f / (0.045f * args.sampleRate));
@@ -1266,7 +1650,7 @@ struct Phaseon : Module {
         lastGate = gate;
         lights[GATE_LIGHT].setBrightness(gate ? 1.0f : 0.0f);
 
-        // -- Clock sync: measure period, override LFO1 phase --
+        // -- Clock sync: measure period, override LFO1+LFO2 phase --
         {
             float dt = 1.0f / std::max(1.0f, args.sampleRate);
             bool clockHigh = inputs[CLOCK_INPUT].getVoltage() > 1.0f;
@@ -1284,19 +1668,51 @@ struct Phaseon : Module {
                     clockPeriod = clockPeriodSmoothed;
                 }
                 clockTimer = 0.0f;
-                // Hard-sync LFO1 phase to clock edge (reset to 0)
-                voice.lfo1Phase = 0.0f;
+                // Hard-sync both LFO phases to clock edge (with respective phase offsets)
+                voice.lfo1Phase = lfoPhaseOffsetOp[0][0];
+                voice.lfo2Phase = lfoPhaseOffsetOp[1][0];
+                for (int oi = 0; oi < 6; ++oi) {
+                    voice.lfo2PhaseOp[oi] = lfoPhaseOffsetOp[1][oi];
+                }
             }
             lastClockHigh = clockHigh;
 
-            // When clock is connected and valid, override LFO1 rate.
-            // Phase is advanced here at 1/period Hz; tick() also advances
-            // slightly causing drift, but hard sync on each clock edge corrects it.
+            // When clock is connected and valid, override both LFO rates.
+            // LFO2 rate is ratio-locked to LFO1 based on relative Rate knob settings.
             if (clockConnected && clockPeriod > 0.01f) {
                 float clockHz = 1.0f / clockPeriod;
-                voice.lfo1Phase += dt * clockHz;
+                
+                auto getRateMult = [](float v) {
+                    if (v >= 0.49f && v <= 0.51f) return 1.0f;
+                    if (v > 0.5f) {
+                        return 1.0f + (v - 0.5f) * 2.0f * 7.0f;
+                    } else {
+                        int divs[] = {32, 16, 8, 4, 3, 2};
+                        int idx = (int)(v * 2.0f * 5.99f);
+                        if (idx < 0) idx = 0;
+                        if (idx > 5) idx = 5;
+                        return 1.0f / (float)divs[idx];
+                    }
+                };
+                
+                // LFO1: clock rate * user rate scaling
+                float rate1Scale = getRateMult(lfoRateOp[0][0]);
+                voice.lfo1Phase += dt * clockHz * rate1Scale;
                 if (voice.lfo1Phase >= 1.0f)
                     voice.lfo1Phase -= 1.0f;
+                // LFO2: clock rate * LFO2 rate scaling (independent ratio)
+                float rate2Scale = getRateMult(lfoRateOp[1][0]);
+                voice.lfo2Phase += dt * clockHz * rate2Scale;
+                if (voice.lfo2Phase >= 1.0f)
+                    voice.lfo2Phase -= 1.0f;
+
+                // Per-operator LFO2 phases (for per-op rate control)
+                for (int oi = 0; oi < 6; ++oi) {
+                    float r2 = getRateMult(lfoRateOp[1][oi]);
+                    voice.lfo2PhaseOp[oi] += dt * clockHz * r2;
+                    if (voice.lfo2PhaseOp[oi] >= 1.0f)
+                        voice.lfo2PhaseOp[oi] -= 1.0f;
+                }
             }
 
             // If clock disconnected, clear measurement so free-running resumes
@@ -1306,7 +1722,7 @@ struct Phaseon : Module {
             }
         }
 
-        // â”€â”€ Control rate: update macros â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ── Control rate: update macros ─────────────────────────────
         if (++controlDivider >= kControlRate) {
             controlDivider = 0;
 
@@ -1330,7 +1746,18 @@ struct Phaseon : Module {
 
             macros.envStyle    = params[ENV_STYLE_PARAM].getValue() * 4.0f;
             macros.envSpread   = params[ENV_SPREAD_PARAM].getValue();
-            macros.spike       = params[SPIKE_PARAM].getValue();
+            // BITCRUSH knob:
+            // - actual bitcrush depth is capped (max = previous ~0.4)
+            // - simultaneously drives a strong lowpass/high-cut filter to remove harshness
+            // Curve: knob=0.5 -> ~80% of max filtering.
+            bitcrushKnob01 = clamp01(params[SPIKE_PARAM].getValue());
+            macros.spike   = bitcrushKnob01 * 0.30f;
+            {
+                float k = bitcrushKnob01;
+                // 1 - (1-k)^b with b chosen so f(0.5)=0.8
+                constexpr float b = 2.3219281f; // log2(5)
+                bitcrushFilter01 = 1.0f - powf(1.0f - k, b);
+            }
             macros.tail        = params[TAIL_PARAM].getValue();
             macros.drift       = params[DRIFT_PARAM].getValue();
             macros.network     = params[NETWORK_PARAM].getValue();
@@ -1339,25 +1766,254 @@ struct Phaseon : Module {
             macros.warpMode    = (int)(params[WARP_MODE_PARAM].getValue() + 0.5f);
 
             macros.tame        = params[TAMING_PARAM].getValue();
+            macros.feedbackBoost = params[FEEDBACK_BOOST_PARAM].getValue();
 
             // Per-operator waveform editing sync: EDIT_OP selects which operator the OP_WAVE knob edits.
             int editOp = (int)(params[EDIT_OP_PARAM].getValue() + 0.5f) - 1;
             if (editOp < 0) editOp = 0;
             if (editOp > 5) editOp = 5;
 
-            if (editOp != lastEditOp) {
+            int wfMode = (params[OP_WF_MODE_PARAM].getValue() > 0.5f) ? 1 : 0; // 0=WAV, 1=FREQ
+
+            if (editOp != lastEditOp || wfMode != lastOpWfMode) {
                 // Update knob to reflect stored mode for the newly selected operator.
-                params[OP_WAVE_PARAM].setValue((float)opWaveMode[editOp]);
+                if (wfMode == 0) {
+                    // Waveform index 0..8 → normalized 0..1
+                    int mode = (int)opWaveMode[editOp];
+                    if (mode < 0) mode = 0;
+                    if (mode > 8) mode = 8;
+                    float norm = (float)mode / 8.0f;
+                    params[OP_WAVE_PARAM].setValue(norm);
+                } else {
+                    // Semitone offset -24..+24 → normalized 0..1
+                    float semi = opFreqSemi[editOp];
+                    if (semi < -24.0f) semi = -24.0f;
+                    if (semi >  24.0f) semi =  24.0f;
+                    float norm = (semi + 24.0f) / 48.0f;
+                    params[OP_WAVE_PARAM].setValue(norm);
+                }
                 lastEditOp = editOp;
+                lastOpWfMode = wfMode;
             }
 
-            int mode = (int)(params[OP_WAVE_PARAM].getValue() + 0.5f);
-            if (mode < 0) mode = 0;
-            if (mode > 5) mode = 5;
-            opWaveMode[editOp] = (uint8_t)mode;
+            float editNorm = params[OP_WAVE_PARAM].getValue();
+            if (editNorm < 0.0f) editNorm = 0.0f;
+            if (editNorm > 1.0f) editNorm = 1.0f;
+            if (wfMode == 0) {
+                // WAVE mode: map 0..1 → discrete 0..8 across full knob travel.
+                float idxf = editNorm * 8.0f;
+                int mode = (int)std::round(idxf);
+                if (mode < 0) mode = 0;
+                if (mode > 8) mode = 8;
+                opWaveMode[editOp] = (uint8_t)mode;
+            } else {
+                // FREQ mode: map 0..1 → -24..+24 semitone offset.
+                float semi = editNorm * 48.0f - 24.0f;
+                semi = std::round(semi);
+                if (semi < -24.0f) semi = -24.0f;
+                if (semi >  24.0f) semi =  24.0f;
+                opFreqSemi[editOp] = semi;
+            }
 
             for (int oi = 0; oi < 6; ++oi) {
                 macros.opWaveMode[oi] = opWaveMode[oi];
+                macros.opFreq[oi] = opFreqSemi[oi];
+            }
+
+#ifndef METAMODULE
+            // DEBUG: log waveform mode changes
+            {
+                static uint8_t prevModes[6] = {};
+                bool changed = false;
+                for (int oi = 0; oi < 6; ++oi) {
+                    if (opWaveMode[oi] != prevModes[oi]) { changed = true; break; }
+                }
+                if (changed) {
+                    INFO("Phaseon opWaveMode: [%d,%d,%d,%d,%d,%d] editOp=%d wfMode=%d",
+                        opWaveMode[0], opWaveMode[1], opWaveMode[2],
+                        opWaveMode[3], opWaveMode[4], opWaveMode[5],
+                        editOp, wfMode);
+                    for (int oi = 0; oi < 6; ++oi) prevModes[oi] = opWaveMode[oi];
+                }
+            }
+#endif
+
+            // -- LFO / ENV switch-driven sync ----------------------------------
+            {
+                // 3-way mode: 0=LFO1, 1=LFO2, 2=ENV (per-operator ADSR editor)
+                int mode = (int)std::round(params[LFO_SELECT_PARAM].getValue());
+                if (mode < 0) mode = 0;
+                if (mode > 2) mode = 2;
+
+                // Current operator selection (1..6 on panel, 0..5 internally)
+                int opSel = (int)(params[LFO_OP_SELECT_PARAM].getValue() + 0.5f) - 1;
+                if (opSel < 0) opSel = 0;
+                if (opSel > 5) opSel = 5;
+
+                // Target selector: 0=ALL, 1=OP. In ENV mode this controls whether
+                // ADSR edits apply to all operators or just the selected one.
+                int lfoTgt = (params[LFO_TARGET_PARAM].getValue() > 0.5f) ? 1 : 0; // 0=ALL, 1=OP
+
+                auto lfoWriteFromTrimpots = [&](int li, int editOp) {
+                    float r = clamp01(params[LFO_RATE_PARAM].getValue());
+                    float p = clamp01(params[LFO_PHASE_PARAM].getValue());
+                    float d = clamp01(params[LFO_DEFORM_PARAM].getValue());
+                    float a = clamp01(params[LFO_AMP_PARAM].getValue());
+                    if (editOp < -1) editOp = -1;
+                    if (editOp > 5) editOp = 5;
+                    if (li < 0) li = 0;
+                    if (li > 1) li = 1;
+                    if (editOp == -1) {
+                        for (int oi = 0; oi < 6; ++oi) {
+                            lfoRateOp[li][oi]        = r;
+                            lfoPhaseOffsetOp[li][oi] = p;
+                            lfoDeformOp[li][oi]      = d;
+                            lfoAmpOp[li][oi]         = a;
+                        }
+                    } else {
+                        lfoRateOp[li][editOp]        = r;
+                        lfoPhaseOffsetOp[li][editOp] = p;
+                        lfoDeformOp[li][editOp]      = d;
+                        lfoAmpOp[li][editOp]         = a;
+                    }
+                };
+
+                auto lfoLoadToTrimpots = [&](int li, int editOp) {
+                    if (editOp < -1) editOp = -1;
+                    if (editOp > 5) editOp = 5;
+                    if (li < 0) li = 0;
+                    if (li > 1) li = 1;
+                    int srcOp = (editOp == -1) ? 0 : editOp;
+                    params[LFO_RATE_PARAM].setValue(lfoRateOp[li][srcOp]);
+                    params[LFO_PHASE_PARAM].setValue(lfoPhaseOffsetOp[li][srcOp]);
+                    params[LFO_DEFORM_PARAM].setValue(lfoDeformOp[li][srcOp]);
+                    params[LFO_AMP_PARAM].setValue(lfoAmpOp[li][srcOp]);
+                };
+
+                if (mode == 2) {
+                    // ENV edit mode: trimpots edit per-op ADSR shapes under the existing envelopes.
+
+                    // If coming from an LFO mode, persist the last LFO's trimpot values.
+                    if (lastLfoMode == 0 || lastLfoMode == 1) {
+                        int lastIdx = (lastLfoMode < 0) ? 0 : lastLfoMode;
+                        int prevEditOp = lastLfoEditOp[lastIdx];
+                        lfoWriteFromTrimpots(lastIdx, prevEditOp);
+                    }
+
+                    if (lfoTgt == 0) {
+                        // ALL operators: trimpots control a shared ADSR shape applied to all ops.
+                        // On first enter to ENV (from LFO), sync knobs from operator 0.
+                        if (lastLfoMode != 2) {
+                            params[LFO_RATE_PARAM].setValue(envAtkShape[0]);
+                            params[LFO_PHASE_PARAM].setValue(envDecShape[0]);
+                            params[LFO_DEFORM_PARAM].setValue(envSusShape[0]);
+                            params[LFO_AMP_PARAM].setValue(envRelShape[0]);
+                        }
+
+                        float a = clamp01(params[LFO_RATE_PARAM].getValue());
+                        float d = clamp01(params[LFO_PHASE_PARAM].getValue());
+                        float s = clamp01(params[LFO_DEFORM_PARAM].getValue());
+                        float r = clamp01(params[LFO_AMP_PARAM].getValue());
+                        for (int oi = 0; oi < 6; ++oi) {
+                            envAtkShape[oi] = a;
+                            envDecShape[oi] = d;
+                            envSusShape[oi] = s;
+                            envRelShape[oi] = r;
+                        }
+                    }
+                    else {
+                        // Single-operator edit: trimpots only affect the selected operator.
+
+                        // If ENV mode just entered or operator changed, sync trimpots to that op's shapes.
+                        if (lastLfoMode != 2 || opSel != lastEnvEditOp) {
+                            if (lastLfoMode == 2) {
+                                // Commit shapes for previously edited operator.
+                                int prevOp = lastEnvEditOp;
+                                if (prevOp < 0) prevOp = 0;
+                                if (prevOp > 5) prevOp = 5;
+                                envAtkShape[prevOp] = clamp01(params[LFO_RATE_PARAM].getValue());
+                                envDecShape[prevOp] = clamp01(params[LFO_PHASE_PARAM].getValue());
+                                envSusShape[prevOp] = clamp01(params[LFO_DEFORM_PARAM].getValue());
+                                envRelShape[prevOp] = clamp01(params[LFO_AMP_PARAM].getValue());
+                            }
+
+                            // Load current operator's shapes into the trimpots.
+                            params[LFO_RATE_PARAM].setValue(envAtkShape[opSel]);
+                            params[LFO_PHASE_PARAM].setValue(envDecShape[opSel]);
+                            params[LFO_DEFORM_PARAM].setValue(envSusShape[opSel]);
+                            params[LFO_AMP_PARAM].setValue(envRelShape[opSel]);
+                            lastEnvEditOp = opSel;
+                        }
+
+                        // Continuously write trimpots back into the selected operator's shapes.
+                        envAtkShape[opSel] = clamp01(params[LFO_RATE_PARAM].getValue());
+                        envDecShape[opSel] = clamp01(params[LFO_PHASE_PARAM].getValue());
+                        envSusShape[opSel] = clamp01(params[LFO_DEFORM_PARAM].getValue());
+                        envRelShape[opSel] = clamp01(params[LFO_AMP_PARAM].getValue());
+                    }
+                }
+                else {
+                    // LFO1 / LFO2 edit modes
+                    int lfoSel = mode; // 0 or 1
+                    if (lfoSel < 0) lfoSel = 0;
+                    if (lfoSel > 1) lfoSel = 1;
+
+                    // Current editing target: -1 = ALL, 0..5 = operator
+                    int editOp = (lfoTgt == 0) ? -1 : opSel;
+
+                    // If we were already in an LFO mode and the context (LFO or target op) changed,
+                    // commit the current trimpots into the previous context before switching.
+                    if (lastLfoMode == 0 || lastLfoMode == 1) {
+                        int prevLfo = lastLfoMode;
+                        int prevEditOp = lastLfoEditOp[prevLfo];
+                        if (prevLfo != lfoSel || prevEditOp != editOp) {
+                            lfoWriteFromTrimpots(prevLfo, prevEditOp);
+                        }
+                    }
+
+                    // If switching between LFOs, coming from ENV, or changing target op,
+                    // load the new context into the trimpots.
+                    if (lastLfoMode != lfoSel || lastLfoMode == 2 || lastLfoEditOp[lfoSel] != editOp) {
+                        lfoLoadToTrimpots(lfoSel, editOp);
+                    }
+
+                    // Continuously write current trimpot values back to the selected LFO's storage
+                    lfoWriteFromTrimpots(lfoSel, editOp);
+                    lastLfoEditOp[lfoSel] = editOp;
+
+                    // Target operator: -1=ALL, 0..5=specific
+                    if (lfoTgt == 0) {
+                        lfoTargetOp[lfoSel] = -1;
+                    } else {
+                        lfoTargetOp[lfoSel] = opSel;
+                    }
+                }
+
+                lastLfoMode = mode;
+
+                // Copy all LFO params to macros (ENV shapes are handled separately below)
+                for (int li = 0; li < 2; ++li) {
+                    macros.lfoTargetOp[li] = lfoTargetOp[li];
+                    for (int oi = 0; oi < 6; ++oi) {
+                        macros.lfoRate[li][oi]        = lfoRateOp[li][oi];
+                        macros.lfoPhaseOffset[li][oi] = lfoPhaseOffsetOp[li][oi];
+                        macros.lfoDeform[li][oi]      = lfoDeformOp[li][oi];
+                        macros.lfoAmp[li][oi]         = lfoAmpOp[li][oi];
+                    }
+                }
+
+                // Per-operator ENV ADSR shapes for applyMacros()
+                for (int oi = 0; oi < 6; ++oi) {
+                    macros.envAtkShape[oi] = envAtkShape[oi];
+                    macros.envDecShape[oi] = envDecShape[oi];
+                    macros.envSusShape[oi] = envSusShape[oi];
+                    macros.envRelShape[oi] = envRelShape[oi];
+                }
+
+                // Per-operator level trims (OP1..OP6 volume trimpots)
+                for (int oi = 0; oi < 6; ++oi) {
+                    macros.opLevelTrim[oi] = clamp01(params[OP1_LEVEL_TRIM_PARAM + oi].getValue());
+                }
             }
 
             // CV inputs (bipolar = /5V, unipolar = /10V)
@@ -1378,10 +2034,30 @@ struct Phaseon : Module {
                 macros.modMatrix.slots[i].amount = params[MOD1_AMT_PARAM + i].getValue();
 
             // Spectral tilt filter
-            tiltFilter.tilt = clamp(macros.cvSpectralTilt, -1.0f, 1.0f);
+            // Combine Tilt CV with BITCRUSH-driven darkness.
+            // Increasing BITCRUSH makes the sound progressively more filtered.
+            float dark = bitcrushFilter01;
+            tiltFilter.tilt = clamp(macros.cvSpectralTilt - dark, -1.0f, 1.0f);
 
-            // Apply macros â†’ voice parameters
+            // Apply macros → voice parameters
             applyMacros(voice, macros, wavetableBank, args.sampleRate);
+
+#ifndef METAMODULE
+            // DEBUG: log tableIndex after applyMacros
+            {
+                static int prevTable[6] = {-999,-999,-999,-999,-999,-999};
+                bool changed = false;
+                for (int oi = 0; oi < 6; ++oi) {
+                    if (voice.ops[oi].tableIndex != prevTable[oi]) { changed = true; break; }
+                }
+                if (changed) {
+                    INFO("Phaseon tableIndex: [%d,%d,%d,%d,%d,%d]",
+                        voice.ops[0].tableIndex, voice.ops[1].tableIndex, voice.ops[2].tableIndex,
+                        voice.ops[3].tableIndex, voice.ops[4].tableIndex, voice.ops[5].tableIndex);
+                    for (int oi = 0; oi < 6; ++oi) prevTable[oi] = voice.ops[oi].tableIndex;
+                }
+            }
+#endif
 
             // Shuffle burst: decay chaos/spike overlay over ~200ms
             if (shuffleBurstTimer > 0.0f) {
@@ -1390,8 +2066,8 @@ struct Phaseon : Module {
                 if (shuffleBurstTimer <= 0.0f) {
                     shuffleBurstTimer = 0.0f;
                 } else {
-                    float t = shuffleBurstTimer / 0.20f; // 1..0 over 200ms
-                    voice.chaosAmount = std::max(voice.chaosAmount, 0.60f * t);
+                    float t = shuffleBurstTimer / 0.35f; // 1..0 over 350ms
+                    voice.chaosAmount = std::max(voice.chaosAmount, 0.85f * t);
                 }
             }
         }
@@ -1400,9 +2076,10 @@ struct Phaseon : Module {
         if (params[PANIC_PARAM].getValue() > 0.5f) {
             voice.reset();
             tiltFilter.reset();
+            bitcrushLpPrevL = bitcrushLpPrevR = 0.0f;
         }
 
-        // â”€â”€ Audio â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ── Audio ───────────────────────────────────────────────────
         voice.tick(wavetableBank, args.sampleRate);
 
         float outL = voice.outL;
@@ -1411,19 +2088,44 @@ struct Phaseon : Module {
         // Post-processing: spectral tilt
         tiltFilter.process(outL, outR);
 
+        // Additional BITCRUSH-coupled high-cut filter.
+        // At max BITCRUSH this should remove essentially all harshness.
+        if (bitcrushFilter01 > 0.0005f) {
+            float t = clamp01(bitcrushFilter01);
+            // One-pole coefficient: 1.0 = bypass, ~0.02 = very strong lowpass
+            float coeff = 1.0f - 0.98f * t;
+            if (coeff < 0.02f) coeff = 0.02f;
+            outL = bitcrushLpPrevL + coeff * (outL - bitcrushLpPrevL);
+            outR = bitcrushLpPrevR + coeff * (outR - bitcrushLpPrevR);
+            bitcrushLpPrevL = outL;
+            bitcrushLpPrevR = outR;
+        } else {
+            bitcrushLpPrevL = outL;
+            bitcrushLpPrevR = outR;
+        }
+
+        // Makeup gain to compensate filtering loudness loss.
+        // 0..+12 dB as filtering increases to max.
+        if (bitcrushFilter01 > 0.0005f) {
+            float t = clamp01(bitcrushFilter01);
+            float gain = powf(10.0f, (12.0f * t) / 20.0f);
+            outL *= gain;
+            outR *= gain;
+        }
+
         // Output polish (finished / punchy / slightly dangerous)
         // Prepare is cheap and keeps state stable across sample rate changes.
         polish.prepare(args.sampleRate);
         polish.process(outL, outR, voice.fundamentalHz, macros.edge, args.sampleRate);
 
-        // Scale to Rack levels (Â±5V nominal)
+        // Scale to Rack levels (±5V nominal)
         outputs[LEFT_OUTPUT].setVoltage(outL * 5.0f);
         outputs[RIGHT_OUTPUT].setVoltage(outR * 5.0f);
     }
 
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // ════════════════════════════════════════════════════════════════
     // Serialization
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // ════════════════════════════════════════════════════════════════
     json_t* dataToJson() override {
         json_t* rootJ = json_object();
         json_object_set_new(rootJ, "presetName", json_string(presetName.c_str()));
@@ -1450,6 +2152,64 @@ struct Phaseon : Module {
                 json_array_append_new(owJ, json_integer((int)opWaveMode[oi]));
             }
             json_object_set_new(rootJ, "opWaveMode", owJ);
+        }
+
+        // Per-operator frequency semitone offsets (patch persistence)
+        {
+            json_t* ofJ = json_array();
+            for (int oi = 0; oi < 6; ++oi) {
+                json_array_append_new(ofJ, json_real((double)opFreqSemi[oi]));
+            }
+            json_object_set_new(rootJ, "opFreq", ofJ);
+        }
+
+        // Per-LFO settings (patch persistence)
+        {
+            json_t* lrJ = json_array();
+            json_t* lpJ = json_array();
+            json_t* ldJ = json_array();
+            json_t* laJ = json_array();
+            json_t* ltJ = json_array();
+            for (int li = 0; li < 2; ++li) {
+                json_t* lrOpJ = json_array();
+                json_t* lpOpJ = json_array();
+                json_t* ldOpJ = json_array();
+                json_t* laOpJ = json_array();
+                for (int oi = 0; oi < 6; ++oi) {
+                    json_array_append_new(lrOpJ, json_real((double)lfoRateOp[li][oi]));
+                    json_array_append_new(lpOpJ, json_real((double)lfoPhaseOffsetOp[li][oi]));
+                    json_array_append_new(ldOpJ, json_real((double)lfoDeformOp[li][oi]));
+                    json_array_append_new(laOpJ, json_real((double)lfoAmpOp[li][oi]));
+                }
+                json_array_append_new(lrJ, lrOpJ);
+                json_array_append_new(lpJ, lpOpJ);
+                json_array_append_new(ldJ, ldOpJ);
+                json_array_append_new(laJ, laOpJ);
+                json_array_append_new(ltJ, json_integer(lfoTargetOp[li]));
+            }
+            json_object_set_new(rootJ, "lfoRate", lrJ);
+            json_object_set_new(rootJ, "lfoPhase", lpJ);
+            json_object_set_new(rootJ, "lfoDeform", ldJ);
+            json_object_set_new(rootJ, "lfoAmp", laJ);
+            json_object_set_new(rootJ, "lfoTarget", ltJ);
+        }
+
+        // Per-operator ENV ADSR shapes (patch persistence)
+        {
+            json_t* aJ = json_array();
+            json_t* dJ = json_array();
+            json_t* suJ = json_array();
+            json_t* rJ = json_array();
+            for (int oi = 0; oi < 6; ++oi) {
+                json_array_append_new(aJ, json_real((double)envAtkShape[oi]));
+                json_array_append_new(dJ, json_real((double)envDecShape[oi]));
+                json_array_append_new(suJ, json_real((double)envSusShape[oi]));
+                json_array_append_new(rJ, json_real((double)envRelShape[oi]));
+            }
+            json_object_set_new(rootJ, "envAtkShape", aJ);
+            json_object_set_new(rootJ, "envDecShape", dJ);
+            json_object_set_new(rootJ, "envSusShape", suJ);
+            json_object_set_new(rootJ, "envRelShape", rJ);
         }
 
         return rootJ;
@@ -1513,13 +2273,103 @@ struct Phaseon : Module {
                     continue;
                 int v = (int)json_integer_value(vJ);
                 if (v < 0) v = 0;
-                if (v > 5) v = 5;
+                if (v > 8) v = 8;
                 opWaveMode[oi] = (uint8_t)v;
             }
         }
 
+        // Per-operator frequency semitone offsets
+        json_t* ofJ = json_object_get(rootJ, "opFreq");
+        if (ofJ && json_is_array(ofJ)) {
+            int n = (int)json_array_size(ofJ);
+            for (int oi = 0; oi < 6 && oi < n; ++oi) {
+                json_t* vJ = json_array_get(ofJ, oi);
+                if (!vJ || !json_is_number(vJ))
+                    continue;
+                float v = (float)json_number_value(vJ);
+                if (v < -24.0f) v = -24.0f;
+                if (v >  24.0f) v =  24.0f;
+                opFreqSemi[oi] = v;
+            }
+        }
+
         // Force UI resync on next control-rate tick.
-        lastEditOp = -1;
+        lastEditOp    = -1;
+        lastLfoMode   = -1;
+        lastEnvEditOp = 0;
+        lastLfoEditOp[0] = -1;
+        lastLfoEditOp[1] = -1;
+
+        // Per-LFO settings (per-operator). Backward-compatible with legacy scalar arrays.
+        auto readLfoNested = [&](const char* key, float dst[2][6], float lo, float hi) {
+            json_t* aJ = json_object_get(rootJ, key);
+            if (!aJ || !json_is_array(aJ))
+                return;
+            int n = (int)json_array_size(aJ);
+            for (int li = 0; li < 2 && li < n; ++li) {
+                json_t* vJ = json_array_get(aJ, li);
+                if (!vJ)
+                    continue;
+                if (json_is_number(vJ)) {
+                    float v = (float)json_number_value(vJ);
+                    if (v < lo) v = lo;
+                    if (v > hi) v = hi;
+                    for (int oi = 0; oi < 6; ++oi)
+                        dst[li][oi] = v;
+                }
+                else if (json_is_array(vJ)) {
+                    int on = (int)json_array_size(vJ);
+                    for (int oi = 0; oi < 6 && oi < on; ++oi) {
+                        json_t* eJ = json_array_get(vJ, oi);
+                        if (!eJ || !json_is_number(eJ))
+                            continue;
+                        float v = (float)json_number_value(eJ);
+                        if (v < lo) v = lo;
+                        if (v > hi) v = hi;
+                        dst[li][oi] = v;
+                    }
+                }
+            }
+        };
+        readLfoNested("lfoRate",   lfoRateOp,        0.0f, 1.0f);
+        readLfoNested("lfoPhase",  lfoPhaseOffsetOp, 0.0f, 1.0f);
+        readLfoNested("lfoDeform", lfoDeformOp,      0.0f, 1.0f);
+        readLfoNested("lfoAmp",    lfoAmpOp,         0.0f, 1.0f);
+        {
+            json_t* ltJ = json_object_get(rootJ, "lfoTarget");
+            if (ltJ && json_is_array(ltJ)) {
+                int n = (int)json_array_size(ltJ);
+                for (int li = 0; li < 2 && li < n; ++li) {
+                    json_t* vJ = json_array_get(ltJ, li);
+                    if (vJ && json_is_integer(vJ)) {
+                        int v = (int)json_integer_value(vJ);
+                        if (v < -1) v = -1;
+                        if (v > 5) v = 5;
+                        lfoTargetOp[li] = v;
+                    }
+                }
+            }
+        }
+
+        // Per-operator ENV ADSR shapes
+        {
+            auto readEnv = [&](const char* key, float* dst) {
+                json_t* aJ = json_object_get(rootJ, key);
+                if (!aJ || !json_is_array(aJ))
+                    return;
+                int n2 = (int)json_array_size(aJ);
+                for (int oi = 0; oi < 6 && oi < n2; ++oi) {
+                    json_t* vJ = json_array_get(aJ, oi);
+                    if (!vJ || !json_is_number(vJ))
+                        continue;
+                    dst[oi] = clamp01((float)json_number_value(vJ));
+                }
+            };
+            readEnv("envAtkShape", envAtkShape);
+            readEnv("envDecShape", envDecShape);
+            readEnv("envSusShape", envSusShape);
+            readEnv("envRelShape", envRelShape);
+        }
     }
 
 #ifdef METAMODULE
@@ -1534,9 +2384,71 @@ struct Phaseon : Module {
 #endif
 };
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+std::string OpEditParamQuantity::getDisplayValueString() {
+    Phaseon* mod = dynamic_cast<Phaseon*>(module);
+    if (!mod) {
+        return ParamQuantity::getDisplayValueString();
+    }
+    int wfMode = (mod->params[Phaseon::OP_WF_MODE_PARAM].getValue() > 0.5f) ? 1 : 0; // 0=WAV, 1=FREQ
+    if (wfMode == 0) {
+        float v = getValue();
+        if (v < 0.f) v = 0.f;
+        if (v > 1.f) v = 1.f;
+        float idxf = v * 8.f;
+        int idx = (int)std::round(idxf);
+        if (idx < 0) idx = 0;
+        if (idx > 8) idx = 8;
+        static const char* kNames[] = {"WT", "SINE", "TRI", "SAW", "HARM", "SKEW", "SQR", "WARP", "RECT"};
+        return kNames[idx];
+    }
+    // FREQ mode: map normalized 0..1 → -24..+24 semitone offset
+    float v = getValue();
+    if (v < 0.f) v = 0.f;
+    if (v > 1.f) v = 1.f;
+    float semiF = v * 48.f - 24.f;
+    int semi = (int)std::round(semiF);
+    if (semi < -24) semi = -24;
+    if (semi >  24) semi =  24;
+    return std::to_string(semi) + " st";
+}
+
+std::string OpWfModeParamQuantity::getDisplayValueString() {
+    int wfMode = (getValue() > 0.5f) ? 1 : 0;
+    return wfMode == 0 ? "Waveform" : "Freq";
+}
+
+std::string LfoRateParamQuantity::getDisplayValueString() {
+    Phaseon* mod = dynamic_cast<Phaseon*>(module);
+    if (!mod) {
+        return ParamQuantity::getDisplayValueString();
+    }
+    
+    // If in ENV mode, show 0..1
+    int mode = (int)(mod->params[Phaseon::LFO_SELECT_PARAM].getValue() + 0.5f);
+    if (mode == 2) {
+        return string::f("%.2f", getValue());
+    }
+    
+    float v = getValue();
+    if (v >= 0.49f && v <= 0.51f) {
+        return "x1";
+    } else if (v > 0.5f) {
+        // 0.5..1.0 maps to x1..x8
+        float mult = 1.0f + (v - 0.5f) * 2.0f * 7.0f;
+        return string::f("x%.1f", mult);
+    } else {
+        // 0.0..0.5 maps to /32, /16, /8, /4, /3, /2
+        int divs[] = {32, 16, 8, 4, 3, 2};
+        int idx = (int)(v * 2.0f * 5.99f);
+        if (idx < 0) idx = 0;
+        if (idx > 5) idx = 5;
+        return "/" + std::to_string(divs[idx]);
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════
 // Widget
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ════════════════════════════════════════════════════════════════════
 
 #ifndef METAMODULE
 // NanoVG label helper (same style as other MorphWorx modules)
@@ -1716,7 +2628,7 @@ struct PhaseonWidget : ModuleWidget {
     using PhaseonPortWidget = MVXPort;
 #endif
 
-        // â”€â”€ Panel layout: 20 HP = 101.6mm â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ── Panel layout: 20 HP = 101.6mm ───────────────────────────
         // Minimalith neon green labels: nvgRGB(167, 255, 196)
         const NVGcolor labelColor  = nvgRGB(167, 255, 196);
 
@@ -1727,7 +2639,7 @@ struct PhaseonWidget : ModuleWidget {
         const float panelW = 101.6f;
         const float centerX = panelW * 0.5f;   // 50.8
 
-        // â”€â”€ Label colours (row-based, matches panel "sections") â”€â”€
+        // ── Label colours (row-based, matches panel "sections") ──
         // Row 1 (WT SEL .. DENSITY): GREEN
         // Row 2 (FM CHAR .. PUNCH): RED
         // Row 3 (MOTION .. DRIFT):  BLUE
@@ -1739,8 +2651,8 @@ struct PhaseonWidget : ModuleWidget {
         const NVGcolor cRowYellow = nvgRGB(255, 210,  60);
         const NVGcolor cRowCyan   = nvgRGB( 80, 255, 255);
 
-        const NVGcolor cTilt    = nvgRGB(200, 180, 255);  // lavender â€” TILT CV
-        const NVGcolor cModKnob = nvgRGB(255, 255, 255);  // white â€” M1â€“M6 + MTRX AMT labels
+        const NVGcolor cTilt    = nvgRGB(200, 180, 255);  // lavender — TILT CV
+        const NVGcolor cModKnob = nvgRGB(255, 255, 255);  // white — M1–M6 + MTRX AMT labels
 
         // Black macro knobs: tight left block, 11 mm pitch, 4 columns
         const float mcol1    =  9.0f;
@@ -1748,7 +2660,7 @@ struct PhaseonWidget : ModuleWidget {
         const float mcol3    = 31.0f;
         const float mcolTail = 42.0f;
 
-        // â”€â”€ TOP: Title + Display â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ── TOP: Title + Display ────────────────────────────────────
 #ifdef METAMODULE
         // MetaModule preset name text display (rendered above the faceplate).
         {
@@ -1804,7 +2716,7 @@ struct PhaseonWidget : ModuleWidget {
         // Headline/subtitle are now part of the faceplate art (Phaseon.png), so we don't draw them here.
 #endif
 
-        // â”€â”€ MACRO KNOBS (3 rows Ã— 3 columns) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ── MACRO KNOBS (3 rows × 3 columns) ───────────────────────
         // Move the macro knobs down + right (closer to mod matrix block)
         const Vec macroShiftPx = Vec(25.0f, 47.0f);
         float macroY = 30.0f;
@@ -1826,7 +2738,7 @@ struct PhaseonWidget : ModuleWidget {
         addChild(new PhaseonCenteredLabel(mm2px(Vec(mcolTail, macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "DENSITY", 7.0f, cRowGreen));
 #endif
 
-        // Row 2 (FM group): FM CHARACTER / ALGO / NET / PUNCH
+        // Row 2 (FM group): FM CHARACTER / ALGO / NET / BITCRUSH
         macroY += macroSpacing;
         addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(mcol1,    macroY)).plus(macroShiftPx), module, Phaseon::FM_CHARACTER_PARAM));
         addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(mcol2,    macroY)).plus(macroShiftPx), module, Phaseon::ALGO_PARAM));
@@ -1836,7 +2748,7 @@ struct PhaseonWidget : ModuleWidget {
         addChild(new PhaseonCenteredLabel(mm2px(Vec(mcol1,    macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "FM CHAR", 7.0f, cRowRed));
         addChild(new PhaseonCenteredLabel(mm2px(Vec(mcol2,    macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "ALGO",    7.0f, cRowRed));
         addChild(new PhaseonCenteredLabel(mm2px(Vec(mcol3,    macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "NET",     7.0f, cRowRed));
-        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcolTail, macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "PUNCH",   7.0f, cRowRed));
+        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcolTail, macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "BITCRUSH",7.0f, cRowRed));
 #endif
 
         // Row 3: MOTION / MORPH / COMPLEX / DRIFT
@@ -1852,7 +2764,7 @@ struct PhaseonWidget : ModuleWidget {
         addChild(new PhaseonCenteredLabel(mm2px(Vec(mcolTail, macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "DRIFT",   7.0f, cRowBlue));
 #endif
 
-        // Row 4: ENV / SPREAD / TAIL / SCRAMBLE
+        // Row 4: ENV / SPREAD / LFO / SCRAMBLE
         macroY += macroSpacing;
         addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(mcol1,    macroY)).plus(macroShiftPx), module, Phaseon::ENV_STYLE_PARAM));
         addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(mcol2,    macroY)).plus(macroShiftPx), module, Phaseon::ENV_SPREAD_PARAM));
@@ -1861,27 +2773,47 @@ struct PhaseonWidget : ModuleWidget {
 #ifndef METAMODULE
         addChild(new PhaseonCenteredLabel(mm2px(Vec(mcol1,    macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "ENV",      7.0f, cRowYellow));
         addChild(new PhaseonCenteredLabel(mm2px(Vec(mcol2,    macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "SPREAD",   7.0f, cRowYellow));
-        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcol3,    macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "TAIL",     7.0f, cRowYellow));
+        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcol3,    macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "LFO",      7.0f, cRowYellow));
         addChild(new PhaseonCenteredLabel(mm2px(Vec(mcolTail, macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "SCRAMBLE", 6.5f, cRowYellow));
 #endif
 
-        // Row 5: EDIT OP / OP WAVE / TAME (aligned with macro grid)
+        // Row 5: OPERATOR / EDIT OP / TAME
         macroY += macroSpacing;
-        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(mcol1,    macroY)).plus(macroShiftPx), module, Phaseon::EDIT_OP_PARAM));
-        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(mcol2,    macroY)).plus(macroShiftPx), module, Phaseon::OP_WAVE_PARAM));
+        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(mcol1,    macroY)).plus(macroShiftPx), module, Phaseon::OP_WAVE_PARAM));
+        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(mcol2,    macroY)).plus(macroShiftPx), module, Phaseon::EDIT_OP_PARAM));
         addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(mcol3,    macroY)).plus(macroShiftPx), module, Phaseon::TAMING_PARAM));
+        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(mcolTail, macroY)).plus(macroShiftPx), module, Phaseon::FEEDBACK_BOOST_PARAM));
+
+        // OP Wav/Freq switch (same row as OPERATOR, to the left)
+        // Dropped further down for better visual alignment with the OPERATOR knob.
+        const float opSwitchY = macroY - 2.0f;
+        addParam(createParamCentered<CKSS>(mm2px(Vec(mcol1 - 7.0f, opSwitchY)).plus(macroShiftPx), module, Phaseon::OP_WF_MODE_PARAM));
     #ifndef METAMODULE
-        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcol1,    macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "EDIT OP",  6.5f, cRowCyan));
-        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcol2,    macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "OP WAVE",  6.5f, cRowCyan));
+        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcol1,    macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "OPERATOR", 6.2f, cRowCyan));
+        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcol2,    macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "EDIT OP",  6.5f, cRowCyan));
         addChild(new PhaseonCenteredLabel(mm2px(Vec(mcol3,    macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "TAME",     7.0f, cRowCyan));
+        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcolTail, macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "FDBK",     7.0f, cRowCyan));
     #endif
 
-        // â”€â”€ WHITE MOD MATRIX KNOBS (right block) + SHUFFLE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        // 3 columns Ã— 2 rows on the right half (55â€“89 mm), 17 mm pitch.
+        // Row 6: SHUFFLE / RND / MUTATE (moved from mod matrix Row E)
+        macroY += macroSpacing;
+        // Move buttons up ~6px total (~2mm) without moving labels
+        const float shuffleBtnY = macroY - 2.0f;
+        addParam(createParamCentered<TL1105>(mm2px(Vec(mcol1, shuffleBtnY)).plus(macroShiftPx), module, Phaseon::ROLE_SHUFFLE_PARAM));
+        addParam(createParamCentered<TL1105>(mm2px(Vec(mcol2, shuffleBtnY)).plus(macroShiftPx), module, Phaseon::MOD_RND_PARAM));
+        addParam(createParamCentered<TL1105>(mm2px(Vec(mcol3, shuffleBtnY)).plus(macroShiftPx), module, Phaseon::MOD_MUT_PARAM));
+    #ifndef METAMODULE
+        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcol1, macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "SHUFFLE", 6.5f, cRowCyan));
+        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcol2, macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "RND",     6.5f, cRowCyan));
+        addChild(new PhaseonCenteredLabel(mm2px(Vec(mcol3, macroY - 7.f)).plus(macroShiftPx).plus(textShiftPx), labelSize, "MUTATE",  5.5f, cRowCyan));
+    #endif
+
+        // ── WHITE MOD MATRIX KNOBS (right block) + SHUFFLE ──────────
+        // 3 columns × 2 rows on the right half (55–89 mm), 17 mm pitch.
         // Davies1900hWhiteKnob visually distinct from the black macro knobs.
-        // Labels 7 mm above each knob â€” same convention as for black knobs.
-        // ── MOD MATRIX KNOBS (right block, 3×4 grid) ────────────────
-        // 3 columns × 4 rows: M1-M3, M4-M6, MTRX AMT/FORM/WARP, SHUFFLE/RND/MUT
+        // Labels 7 mm above each knob — same convention as for black knobs.
+        // -- MOD MATRIX KNOBS (right block, 3�4 grid) ----------------
+        // 3 columns � 4 rows: M1-M3, M4-M6, MTRX AMT/FORM/WARP, SHUFFLE/RND/MUT
         {
             // 3 columns, 10 mm pitch, centred in the right block
             const float wmcol1 = 66.0f;
@@ -1891,6 +2823,7 @@ struct PhaseonWidget : ModuleWidget {
             const float wRowA = 30.0f;
             const float wRowB = 30.0f + macroSpacing * 1.0f;
             const float wRowC = 30.0f + macroSpacing * 2.0f;
+            const float wRowD = 30.0f + macroSpacing * 3.0f;
             const float wRowE = 30.0f + macroSpacing * 4.0f;
             // Mod matrix block uses its own shift (15px left of macro block)
             const Vec modShiftPx = Vec(macroShiftPx.x - 21.0f, macroShiftPx.y);
@@ -1907,10 +2840,33 @@ struct PhaseonWidget : ModuleWidget {
             addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(wmcol1, wRowC)).plus(modShiftPx), module, Phaseon::MOD_AMT_PARAM));
             addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(wmcol2, wRowC)).plus(modShiftPx), module, Phaseon::FORMANT_PARAM));
             addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(wmcol3, wRowC)).plus(modShiftPx), module, Phaseon::WARP_MODE_PARAM));
-            // Row E: SHUFFLE, RND, MUTATE (buttons, evenly spaced)
-            addParam(createParamCentered<TL1105>(mm2px(Vec(wmcol1, wRowE + 2.f)).plus(modShiftPx), module, Phaseon::ROLE_SHUFFLE_PARAM));
-            addParam(createParamCentered<TL1105>(mm2px(Vec(wmcol2, wRowE + 2.f)).plus(modShiftPx), module, Phaseon::MOD_RND_PARAM));
-            addParam(createParamCentered<TL1105>(mm2px(Vec(wmcol3, wRowE + 2.f)).plus(modShiftPx), module, Phaseon::MOD_MUT_PARAM));
+
+            // Row D: LFO / ENV mode + target + OP SEL trimpot
+            addParam(createParamCentered<CKSSThree>(mm2px(Vec(wmcol1, wRowD)).plus(modShiftPx), module, Phaseon::LFO_SELECT_PARAM));
+            addParam(createParamCentered<CKSS>(mm2px(Vec(wmcol2, wRowD)).plus(modShiftPx), module, Phaseon::LFO_TARGET_PARAM));
+            addParam(createParamCentered<Trimpot>(mm2px(Vec(wmcol3, wRowD)).plus(modShiftPx), module, Phaseon::LFO_OP_SELECT_PARAM));
+
+            // Row E: LFO trimpots (OP SEL section: RATE / PHASE / DEFORM / AMP)
+            // Use tighter 7mm spacing and small trimpots so they sit closer together.
+            const float lfoCol0 = wmcol1;          // RATE
+            const float lfoCol1 = wmcol1 + 7.0f;   // PHASE
+            const float lfoCol2 = wmcol1 + 14.0f;  // DEFORM
+            const float lfoCol3 = wmcol1 + 21.0f;  // AMP
+            addParam(createParamCentered<SmallTrimpot>(mm2px(Vec(lfoCol0, wRowE)).plus(modShiftPx), module, Phaseon::LFO_RATE_PARAM));
+            addParam(createParamCentered<SmallTrimpot>(mm2px(Vec(lfoCol1, wRowE)).plus(modShiftPx), module, Phaseon::LFO_PHASE_PARAM));
+            addParam(createParamCentered<SmallTrimpot>(mm2px(Vec(lfoCol2, wRowE)).plus(modShiftPx), module, Phaseon::LFO_DEFORM_PARAM));
+            addParam(createParamCentered<SmallTrimpot>(mm2px(Vec(lfoCol3, wRowE)).plus(modShiftPx), module, Phaseon::LFO_AMP_PARAM));
+
+            // Per-operator VOLUME trims (OP1..OP6) — compact single-row layout using the same trimpot size as the LFO trims.
+            const float opVolRow = wRowE + 7.0f;
+            const float opVolDx  = 6.0f; // tighter spacing
+            const float opVolStart = wmcol1 - opVolDx;
+            addParam(createParamCentered<SmallTrimpot>(mm2px(Vec(opVolStart + opVolDx * 0.0f, opVolRow)).plus(modShiftPx), module, Phaseon::OP1_LEVEL_TRIM_PARAM));
+            addParam(createParamCentered<SmallTrimpot>(mm2px(Vec(opVolStart + opVolDx * 1.0f, opVolRow)).plus(modShiftPx), module, Phaseon::OP2_LEVEL_TRIM_PARAM));
+            addParam(createParamCentered<SmallTrimpot>(mm2px(Vec(opVolStart + opVolDx * 2.0f, opVolRow)).plus(modShiftPx), module, Phaseon::OP3_LEVEL_TRIM_PARAM));
+            addParam(createParamCentered<SmallTrimpot>(mm2px(Vec(opVolStart + opVolDx * 3.0f, opVolRow)).plus(modShiftPx), module, Phaseon::OP4_LEVEL_TRIM_PARAM));
+            addParam(createParamCentered<SmallTrimpot>(mm2px(Vec(opVolStart + opVolDx * 4.0f, opVolRow)).plus(modShiftPx), module, Phaseon::OP5_LEVEL_TRIM_PARAM));
+            addParam(createParamCentered<SmallTrimpot>(mm2px(Vec(opVolStart + opVolDx * 5.0f, opVolRow)).plus(modShiftPx), module, Phaseon::OP6_LEVEL_TRIM_PARAM));
 
 #ifndef METAMODULE
             const Vec wLabelSz = Vec(60.0f, 10.0f);
@@ -1926,14 +2882,38 @@ struct PhaseonWidget : ModuleWidget {
             addChild(new PhaseonCenteredLabel(mm2px(Vec(wmcol1, wRowC - 7.f)).plus(modShiftPx).plus(textShiftPx), Vec(80.0f, 10.0f), "MTRX AMT", 6.0f, cModKnob));
             addChild(new PhaseonCenteredLabel(mm2px(Vec(wmcol2, wRowC - 7.f)).plus(modShiftPx).plus(textShiftPx), wLabelSz, "FORM", 6.5f, cRowGreen));
             addChild(new PhaseonCenteredLabel(mm2px(Vec(wmcol3, wRowC - 7.f)).plus(modShiftPx).plus(textShiftPx), wLabelSz, "WARP", 6.5f, cRowGreen));
-            // Row E labels
-                addChild(new PhaseonCenteredLabel(mm2px(Vec(wmcol1, wRowE - 5.f)).plus(modShiftPx).plus(textShiftPx).plus(Vec(0.f, 4.f)), wLabelSz, "SHUFFLE", 6.5f, cModKnob));
-                addChild(new PhaseonCenteredLabel(mm2px(Vec(wmcol2, wRowE - 5.f)).plus(modShiftPx).plus(textShiftPx).plus(Vec(0.f, 4.f)), wLabelSz, "RND", 6.5f, cModKnob));
-                addChild(new PhaseonCenteredLabel(mm2px(Vec(wmcol3, wRowE - 5.f)).plus(modShiftPx).plus(textShiftPx).plus(Vec(0.f, 4.f)), wLabelSz, "MUTATE", 5.5f, cModKnob));
+            // Row D labels (LFO / ENV switches)
+            const NVGcolor cLfo = nvgRGB(255, 180, 60); // orange for LFO controls
+            // "ENV/LFO" and "ALL/OP" slightly above row center; "OP SEL" 1px lower than before
+            addChild(new PhaseonCenteredLabel(mm2px(Vec(wmcol1, wRowD - 6.f)).plus(modShiftPx).plus(textShiftPx), wLabelSz, "ENV/LFO", 5.5f, cLfo));
+            addChild(new PhaseonCenteredLabel(mm2px(Vec(wmcol2, wRowD - 6.f)).plus(modShiftPx).plus(textShiftPx), wLabelSz, "ALL/OP", 5.5f, cLfo));
+            addChild(new PhaseonCenteredLabel(mm2px(Vec(wmcol3, wRowD - 5.5f)).plus(modShiftPx).plus(textShiftPx), wLabelSz, "OP SEL", 5.5f, cLfo));
+            // Row E labels (LFO trimpots) — shifted slightly down
+            addChild(new PhaseonCenteredLabel(mm2px(Vec(lfoCol0, wRowE - 6.f)).plus(modShiftPx).plus(textShiftPx), wLabelSz, "RATE", 5.5f, cLfo));
+            addChild(new PhaseonCenteredLabel(mm2px(Vec(lfoCol1, wRowE - 6.f)).plus(modShiftPx).plus(textShiftPx), wLabelSz, "PHASE", 5.5f, cLfo));
+            addChild(new PhaseonCenteredLabel(mm2px(Vec(lfoCol2, wRowE - 6.f)).plus(modShiftPx).plus(textShiftPx), wLabelSz, "DEFORM", 5.0f, cLfo));
+            addChild(new PhaseonCenteredLabel(mm2px(Vec(lfoCol3, wRowE - 6.f)).plus(modShiftPx).plus(textShiftPx), wLabelSz, "AMP", 5.5f, cLfo));
+
+            // Secondary ADSR markers under the LFO labels (cyan), aligned with the same columns
+            const NVGcolor cAdsr = cRowCyan;
+            const float adsrDyPx = -1.5f; // a touch closer to the knobs than the main labels
+            addChild(new PhaseonCenteredLabel(mm2px(Vec(lfoCol0, wRowE - 4.f)).plus(modShiftPx).plus(textShiftPx).plus(Vec(0.f, adsrDyPx)), wLabelSz, "A", 5.0f, cAdsr));
+            addChild(new PhaseonCenteredLabel(mm2px(Vec(lfoCol1, wRowE - 4.f)).plus(modShiftPx).plus(textShiftPx).plus(Vec(0.f, adsrDyPx)), wLabelSz, "D", 5.0f, cAdsr));
+            addChild(new PhaseonCenteredLabel(mm2px(Vec(lfoCol2, wRowE - 4.f)).plus(modShiftPx).plus(textShiftPx).plus(Vec(0.f, adsrDyPx)), wLabelSz, "S", 5.0f, cAdsr));
+            addChild(new PhaseonCenteredLabel(mm2px(Vec(lfoCol3, wRowE - 4.f)).plus(modShiftPx).plus(textShiftPx).plus(Vec(0.f, adsrDyPx)), wLabelSz, "R", 5.0f, cAdsr));
+
+                // OP volume trim labels, aligned with single-row trims
+                const float opLblDy = 4.0f;
+                addChild(new PhaseonCenteredLabel(mm2px(Vec(opVolStart + opVolDx * 0.0f, opVolRow - opLblDy)).plus(modShiftPx).plus(textShiftPx), wLabelSz, "OP1", 5.2f, cLfo));
+                addChild(new PhaseonCenteredLabel(mm2px(Vec(opVolStart + opVolDx * 1.0f, opVolRow - opLblDy)).plus(modShiftPx).plus(textShiftPx), wLabelSz, "OP2", 5.2f, cLfo));
+                addChild(new PhaseonCenteredLabel(mm2px(Vec(opVolStart + opVolDx * 2.0f, opVolRow - opLblDy)).plus(modShiftPx).plus(textShiftPx), wLabelSz, "OP3", 5.2f, cLfo));
+                addChild(new PhaseonCenteredLabel(mm2px(Vec(opVolStart + opVolDx * 3.0f, opVolRow - opLblDy)).plus(modShiftPx).plus(textShiftPx), wLabelSz, "OP4", 5.2f, cLfo));
+                addChild(new PhaseonCenteredLabel(mm2px(Vec(opVolStart + opVolDx * 4.0f, opVolRow - opLblDy)).plus(modShiftPx).plus(textShiftPx), wLabelSz, "OP5", 5.2f, cLfo));
+                addChild(new PhaseonCenteredLabel(mm2px(Vec(opVolStart + opVolDx * 5.0f, opVolRow - opLblDy)).plus(modShiftPx).plus(textShiftPx), wLabelSz, "OP6", 5.2f, cLfo));
 #endif
         }
 
-        // â”€â”€ PORTS (16 total) â€” tidy 8Ã—2 grid, equal spacing â”€â”€
+        // ── PORTS (16 total) — tidy 8×2 grid, equal spacing ──
         {
             const float xL = 10.0f;
             const float xR = panelW - 10.0f;
@@ -1943,9 +2923,10 @@ struct PhaseonWidget : ModuleWidget {
             // Panel layout tweak:
             // - Upper row down slightly (tighten spacing above ports)
             // - Lower row down by 15px
-            const Vec row1ShiftPx = Vec(0.f, 52.f);
-			const Vec row2ShiftPx = Vec(0.f, 15.f);
-            const float portLabelDyPx = 19.f;
+            // Additional 2px downward shift applied to both rows.
+            const Vec row1ShiftPx = Vec(0.f, 61.f);
+			const Vec row2ShiftPx = Vec(0.f, 17.f);
+            const float portLabelDyPx = 17.f;
 
             auto xAt = [&](int i) { return xL + dx * (float)i; };
 			auto portPx = [&](int col, float y, Vec shiftPx) {
@@ -1978,26 +2959,26 @@ struct PhaseonWidget : ModuleWidget {
     #ifndef METAMODULE
             const Vec cvLabelSize = Vec(70.0f, 10.0f);
             // Row 1 labels
-            addChild(new PhaseonCenteredLabel(portPx(0, row1Y, row1ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), cvLabelSize, "H.DENS",   6.5f, cRowGreen));
-            addChild(new PhaseonCenteredLabel(portPx(1, row1Y, row1ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), cvLabelSize, "ENV.SPD",  6.5f, cRowYellow));
-            addChild(new PhaseonCenteredLabel(portPx(2, row1Y, row1ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), cvLabelSize, "WT.SEL",   6.5f, cRowGreen));
-            addChild(new PhaseonCenteredLabel(portPx(3, row1Y, row1ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), cvLabelSize, "EDGE",     6.5f, cRowGreen));
-            addChild(new PhaseonCenteredLabel(portPx(4, row1Y, row1ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), cvLabelSize, "WT FRAME", 6.0f, cRowGreen));
-            addChild(new PhaseonCenteredLabel(portPx(5, row1Y, row1ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), cvLabelSize, "WT.RGN",   6.5f, cRowGreen));
-            addChild(new PhaseonCenteredLabel(portPx(6, row1Y, row1ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), cvLabelSize, "CMPLX",    6.5f, cRowBlue));
-            addChild(new PhaseonCenteredLabel(portPx(7, row1Y, row1ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), cvLabelSize, "TILT",     6.5f, cTilt));
+            addChild(new PhaseonCenteredLabel(portPx(0, row1Y, row1ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), cvLabelSize, "DENS",     5.2f, cRowGreen));
+            addChild(new PhaseonCenteredLabel(portPx(1, row1Y, row1ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), cvLabelSize, "ENV.SPD",  5.2f, cRowYellow));
+            addChild(new PhaseonCenteredLabel(portPx(2, row1Y, row1ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), cvLabelSize, "WT.SEL",   5.2f, cRowGreen));
+            addChild(new PhaseonCenteredLabel(portPx(3, row1Y, row1ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), cvLabelSize, "EDGE",     5.2f, cRowGreen));
+            addChild(new PhaseonCenteredLabel(portPx(4, row1Y, row1ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), cvLabelSize, "WT FRAME", 4.8f, cRowGreen));
+            addChild(new PhaseonCenteredLabel(portPx(5, row1Y, row1ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), cvLabelSize, "WT.RGN",   5.2f, cRowGreen));
+            addChild(new PhaseonCenteredLabel(portPx(6, row1Y, row1ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), cvLabelSize, "CMPLX",    5.2f, cRowBlue));
+            addChild(new PhaseonCenteredLabel(portPx(7, row1Y, row1ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), cvLabelSize, "FILTER",   4.8f, cTilt));
 
             const Vec ioLabelSize = Vec(60.0f, 10.0f);
             // Row 2 labels
-                addChild(new PhaseonCenteredLabel(portPx(0, row2Y, row2ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), cvLabelSize, "MORPH",  6.5f, cRowBlue));
-                addChild(new PhaseonCenteredLabel(portPx(1, row2Y, row2ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), cvLabelSize, "MOTION", 6.5f, cRowBlue));
-                addChild(new PhaseonCenteredLabel(portPx(2, row2Y, row2ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), ioLabelSize, "FORM",  7.0f, cRowGreen));
+                addChild(new PhaseonCenteredLabel(portPx(0, row2Y, row2ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), cvLabelSize, "MORPH",  5.2f, cRowBlue));
+                addChild(new PhaseonCenteredLabel(portPx(1, row2Y, row2ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), cvLabelSize, "MOTION", 5.2f, cRowBlue));
+                addChild(new PhaseonCenteredLabel(portPx(2, row2Y, row2ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), ioLabelSize, "FORM",  5.6f, cRowGreen));
                 const NVGcolor cIoGrey = nvgRGB(160, 160, 160);
-                addChild(new PhaseonCenteredLabel(portPx(3, row2Y, row2ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), ioLabelSize, "CLK",   7.0f, cIoGrey));
-                addChild(new PhaseonCenteredLabel(portPx(4, row2Y, row2ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), ioLabelSize, "GATE",  7.0f, cIoGrey));
-                addChild(new PhaseonCenteredLabel(portPx(5, row2Y, row2ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), ioLabelSize, "V/OCT", 7.0f, cIoGrey));
-                addChild(new PhaseonCenteredLabel(portPx(6, row2Y, row2ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), ioLabelSize, "L",     7.0f, cIoGrey));
-                addChild(new PhaseonCenteredLabel(portPx(7, row2Y, row2ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), ioLabelSize, "R",     7.0f, cIoGrey));
+                addChild(new PhaseonCenteredLabel(portPx(3, row2Y, row2ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), ioLabelSize, "CLK",   5.6f, cIoGrey));
+                addChild(new PhaseonCenteredLabel(portPx(4, row2Y, row2ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), ioLabelSize, "GATE",  5.6f, cIoGrey));
+                addChild(new PhaseonCenteredLabel(portPx(5, row2Y, row2ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), ioLabelSize, "V/OCT", 5.6f, cIoGrey));
+                addChild(new PhaseonCenteredLabel(portPx(6, row2Y, row2ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), ioLabelSize, "L",     5.6f, cIoGrey));
+                addChild(new PhaseonCenteredLabel(portPx(7, row2Y, row2ShiftPx).plus(Vec(0.f, -portLabelDyPx + 4.f)), ioLabelSize, "R",     5.6f, cIoGrey));
     #endif
         }
     }
@@ -2027,9 +3008,9 @@ struct PhaseonWidget : ModuleWidget {
         for (int si = 0; si < phaseon::kModSlots; ++si) {
             phaseon::ModSlot& slot = module->macros.modMatrix.slots[si];
 
-            // Build label: "M1: Velocity â†’ FmDepth [All]"
+            // Build label: "M1: Velocity → FmDepth [All]"
             char slotLabel[80];
-            snprintf(slotLabel, sizeof(slotLabel), "M%d: %s â†’ %s [%s]",
+            snprintf(slotLabel, sizeof(slotLabel), "M%d: %s → %s [%s]",
                      si + 1,
                      phaseon::modSourceName(slot.src),
                      phaseon::modDestName(slot.dst),

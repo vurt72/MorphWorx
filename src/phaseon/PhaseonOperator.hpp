@@ -54,7 +54,7 @@ struct Operator {
 
     // Spectral warp controls (pad-friendly, continuous)
     // pdAmount: blends phase distortion / warp depth into PM (0..1)
-    // warpMode: selects warp shape (0=Classic PD, 1=Bend+, 2=Bend-, 3=Sync, 4=Quantize, 5=Asym)
+    // warpMode: selects warp shape (0=Off, 1=Bend+, 2=Bend-, 3=Sync, 4=Quantize, 5=Asym, 6=Classic PD hybrid)
     // wsMix:    blends gentle waveshaping post-lookup (0..1)
     // wsDrive:  base drive amount (1..~4 typical)
     float pdAmount = 0.0f;
