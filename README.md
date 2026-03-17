@@ -7,6 +7,8 @@ VCV Rack 2 and 4ms MetaModule plugin.
 ### Phaseon1
 4-operator phase modulation (PM/FM) synthesizer voice with user-loadable wavetable and formant shaper. Macro controls (TIMBRE, COLOR, DENSITY, MOTION) provide expressive performance shaping with extensive CV modulation.  Factory preset bank included.
 
+📖 **[Full Manual](docs/phaseon1-manual.md)**
+
 ### Trigonomicon
 Generative drum trigger pattern generator. IDM, breakcore, amen-break, and drill-inspired rhythmic structures. Probability-weighted pattern mutation and clock-synced CV outputs.
 
