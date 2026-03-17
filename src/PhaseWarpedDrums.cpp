@@ -70,10 +70,22 @@ void PhaseWarpedDrums::onReset() {
 json_t* PhaseWarpedDrums::dataToJson() {
     json_t* rootJ = json_object();
     json_object_set_new(rootJ, "tempo", json_real(tempo_));
+#ifdef METAMODULE
+    json_object_set_new(rootJ, "morphworx_version", json_string(MORPHWORX_VERSION_STRING));
+#endif
     return rootJ;
 }
 
 void PhaseWarpedDrums::dataFromJson(json_t* rootJ) {
+#ifdef METAMODULE
+    json_t* verJ = json_object_get(rootJ, "morphworx_version");
+    if (verJ && json_is_string(verJ)) {
+        const char* saved = json_string_value(verJ);
+        if (!saved || std::string(saved) != std::string(MORPHWORX_VERSION_STRING)) {
+            return;
+        }
+    }
+#endif
     json_t* tempoJ = json_object_get(rootJ, "tempo");
     if (tempoJ) tempo_ = json_number_value(tempoJ);
 }

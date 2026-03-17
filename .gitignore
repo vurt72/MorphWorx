@@ -50,3 +50,36 @@ skills-lock.json
 *.out
 *.app
 *.dwo
+
+# ==============================
+# Python
+# ==============================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# ==============================
+# Phaseon1 development backups
+# ==============================
+Phaseon1.best*
+Phaseon1.old*
+Phaseon1.bak*
+
+# ==============================
+# Misc scratch / reference files
+# ==============================
+surge.json
+filter.txt
+mutate.txt
+metamodule_perf_fix.txt
+apply_opts*.py
+fix_*.py
+re_hoist.py
+replace_env.py
+
+# ==============================
+# Draft / duplicate panel images
+# ==============================
+res/*kopia*
+res/[0-9][0-9]*.png

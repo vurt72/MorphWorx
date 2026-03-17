@@ -183,6 +183,9 @@ void PfmEngine::loadPatch(const struct OneSynthParams& params) {
 
     // Store base values for CV modulation
     baseAlgo = timbre->params.engine1.algo;
+    glideValue = timbre->params.engine1.glide;
+    if (glideValue < 0.0f) glideValue = 0.0f;
+    if (glideValue > 12.0f) glideValue = 12.0f;
     baseIm[0] = timbre->params.engineIm1.modulationIndex1;
     baseIm[1] = timbre->params.engineIm1.modulationIndex2;
     baseIm[2] = timbre->params.engineIm2.modulationIndex3;
@@ -379,9 +382,11 @@ int PfmEngine::getBaseAlgo() const {
 void PfmEngine::setGlide(float glide) {
     if (!initialized) return;
     glideValue = glide;
+    if (glideValue < 0.0f) glideValue = 0.0f;
+    if (glideValue > 12.0f) glideValue = 12.0f;
     // Also set in params for reference (though PFM's built-in glide doesn't
     // work in CV mode; we handle portamento ourselves at the engine level)
-    timbre->params.engine1.glide = glide;
+    timbre->params.engine1.glide = glideValue;
 }
 
 void PfmEngine::updatePitch(float frequencyHz) {

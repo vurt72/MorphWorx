@@ -328,7 +328,8 @@ struct Amenolith : Module {
 		MIX_L_OUTPUT,
 		MIX_R_OUTPUT,
 		INST_OUT_BASE,
-		OUTPUTS_LEN = INST_OUT_BASE + NUM_INST
+		ENV_OUTPUT = INST_OUT_BASE + NUM_INST,
+		OUTPUTS_LEN = ENV_OUTPUT + 1
 	};
 	enum LightIds {
 		LIGHTS_LEN
@@ -479,6 +480,7 @@ struct Amenolith : Module {
 	static constexpr int TUNE_RANGE_SEMIS = 3;
 	static constexpr int LUT_SIZE = TUNE_RANGE_SEMIS * 2 + 1;
 	float semitoneRatio[LUT_SIZE] = {};
+	float mixEnv_ = 0.f;
 
 #ifndef METAMODULE
 	struct RuntimeSample {
@@ -649,6 +651,7 @@ struct Amenolith : Module {
 
 		configOutput(MIX_L_OUTPUT, "Mix L");
 		configOutput(MIX_R_OUTPUT, "Mix R");
+		configOutput(ENV_OUTPUT, "ENV OUT");
 
 		for (int s = -TUNE_RANGE_SEMIS; s <= TUNE_RANGE_SEMIS; ++s) {
 			semitoneRatio[s + TUNE_RANGE_SEMIS] = std::exp2f((float)s / 12.f);
@@ -663,6 +666,7 @@ struct Amenolith : Module {
 	}
 
 	void onReset() override {
+		mixEnv_ = 0.f;
 		for (int i = 0; i < NUM_INST; ++i) {
 			genPitch_[i] = GenPitchState{};
 			pendingPitchSemis_[i] = 0.f;
@@ -1134,8 +1138,16 @@ struct Amenolith : Module {
 		mixL = softClip(mixL, drive);
 		mixR = softClip(mixR, drive);
 
-		outputs[MIX_L_OUTPUT].setVoltage(5.f * mixL);
-		outputs[MIX_R_OUTPUT].setVoltage(5.f * mixR);
+		const float envIn = std::max(std::fabs(mixL), std::fabs(mixR));
+		const float attackCoeff = std::exp(-1.f / (0.002f * args.sampleRate));
+		const float releaseCoeff = std::exp(-1.f / (0.08f * args.sampleRate));
+		const float envCoeff = (envIn > mixEnv_) ? attackCoeff : releaseCoeff;
+		mixEnv_ = envIn + envCoeff * (mixEnv_ - envIn);
+		constexpr float MIX_OUTPUT_GAIN = 2.f; // +6 dB on stereo mix outs only
+
+		outputs[MIX_L_OUTPUT].setVoltage(5.f * MIX_OUTPUT_GAIN * mixL);
+		outputs[MIX_R_OUTPUT].setVoltage(5.f * MIX_OUTPUT_GAIN * mixR);
+		outputs[ENV_OUTPUT].setVoltage(10.f * clampf(mixEnv_, 0.f, 1.f));
 	}
 };
 
@@ -1206,6 +1218,12 @@ struct AmenolithWidget : ModuleWidget {
 		auto mm = [&](Vec v) {
 			return mm2px(v).plus(panelShiftPx);
 		};
+		const float mixShiftPx = 22.f;
+		const float mixTightenPx = 8.f;
+		const float mixRShiftPx = mixShiftPx - mixTightenPx;
+		const Vec envOutPos = mm(Vec(102.f, 20.f + yOff));
+		const Vec mixLOutPos = mm(Vec(102.f, 20.f + yOff)).plus(Vec(mixShiftPx, 0.f));
+		const Vec mixROutPos = mm(Vec(112.f, 20.f + yOff)).plus(Vec(mixRShiftPx, 0.f));
 
 		#ifndef METAMODULE
 		auto addLabel = [&](BCPanelLabel* label) {
@@ -1223,8 +1241,9 @@ struct AmenolithWidget : ModuleWidget {
 		addParam(createParamCentered<Trimpot>(mm(Vec(76.f, 20.f + yOff)), module, Amenolith::HUMANIZE_PARAM));
 		addParam(createParamCentered<AmenolithCKSSThree>(mm(Vec(86.f, 20.f + yOff)).plus(switchShiftPx), module, Amenolith::LAYER_SELECT_PARAM));
 		addParam(createParamCentered<AmenolithCKSS>(mm(Vec(94.f, 20.f + yOff)).plus(switchShiftPx), module, Amenolith::GEN_PITCH_PARAM));
-		addOutput(createOutputCentered<AmenolithPort>(mm(Vec(102.f, 20.f + yOff)), module, Amenolith::MIX_L_OUTPUT));
-		addOutput(createOutputCentered<AmenolithPort>(mm(Vec(112.f, 20.f + yOff)), module, Amenolith::MIX_R_OUTPUT));
+		addOutput(createOutputCentered<AmenolithPort>(envOutPos, module, Amenolith::ENV_OUTPUT));
+		addOutput(createOutputCentered<AmenolithPort>(mixLOutPos, module, Amenolith::MIX_L_OUTPUT));
+		addOutput(createOutputCentered<AmenolithPort>(mixROutPos, module, Amenolith::MIX_R_OUTPUT));
 
 		#ifndef METAMODULE
 		// KIT label 3px higher (~0.79mm)
@@ -1236,8 +1255,17 @@ struct AmenolithWidget : ModuleWidget {
 		addLabel(bcCreateLabel(Vec(76.f, 13.f + yOff), "HUM", 8.f, dimGreen));
 		addLabel(bcCreateLabel(Vec(86.f, 13.f + yOff), "LAYER", 8.f, dimGreen));
 		addLabel(bcCreateLabel(Vec(94.f, 13.f + yOff), "PITCH", 8.f, dimGreen));
-		addLabel(bcCreateLabel(Vec(102.f, 13.f + yOff), "MIX L", 8.f, neonGreen));
-		addLabel(bcCreateLabel(Vec(112.f, 13.f + yOff), "MIX R", 8.f, neonGreen));
+		addLabel(bcCreateLabel(Vec(102.f, 13.f + yOff), "ENV OUT", 8.f, neonGreen));
+		{
+			auto* mixLLabel = bcCreateLabel(Vec(102.f, 13.f + yOff), "MIX L", 8.f, neonGreen);
+			mixLLabel->box.pos.x += mixShiftPx;
+			addLabel(mixLLabel);
+		}
+		{
+			auto* mixRLabel = bcCreateLabel(Vec(112.f, 13.f + yOff), "MIX R", 8.f, neonGreen);
+			mixRLabel->box.pos.x += mixRShiftPx;
+			addLabel(mixRLabel);
+		}
 
 		// Column headers
 		const Vec headerDropPx = Vec(0.f, 3.f);
@@ -1351,7 +1379,7 @@ struct AmenolithWidget : ModuleWidget {
 		menu->addChild(createMenuItem("Load Kit01 folder (audition → KIT 1)", "",
 			[=]() {
 				// Select the Kit01 directory itself (loads all samples from that folder).
-				char* dirPath = osdialog_file(OSDIALOG_OPEN_DIR, NULL, NULL, NULL);
+				char* dirPath = osdialog_file(OSDIALOG_OPEN_DIR, "C:\\kits", NULL, NULL);
 				if (!dirPath) return;
 				module->queueLoadRuntimeKitFromDir(std::string(dirPath));
 				free(dirPath);

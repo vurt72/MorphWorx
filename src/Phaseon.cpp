@@ -1643,9 +1643,11 @@ struct Phaseon : Module {
             // Legato pitch update � slew in V/Oct domain for musical glide
             float voct = inputs[VOCT_INPUT].getVoltage();
             // ~45ms exponential slew (smooth portamento in pitch space)
-            const float slewCoeff = 1.0f - expf(-1.0f / (0.045f * args.sampleRate));
-            slewedVoct += (voct - slewedVoct) * slewCoeff;
-            voice.fundamentalHz = 261.63f * powf(2.0f, slewedVoct);
+            if (std::fabs(voct - slewedVoct) > 0.00001f) {
+                const float slewCoeff = 45.0f / args.sampleRate;
+                slewedVoct += (voct - slewedVoct) * slewCoeff;
+                voice.fundamentalHz = 261.63f * std::pow(2.0f, slewedVoct);
+            }
         }
         lastGate = gate;
         lights[GATE_LIGHT].setBrightness(gate ? 1.0f : 0.0f);
@@ -1754,9 +1756,11 @@ struct Phaseon : Module {
             macros.spike   = bitcrushKnob01 * 0.30f;
             {
                 float k = bitcrushKnob01;
-                // 1 - (1-k)^b with b chosen so f(0.5)=0.8
-                constexpr float b = 2.3219281f; // log2(5)
-                bitcrushFilter01 = 1.0f - powf(1.0f - k, b);
+                // 1 - (1-k)^b with b~2.32 so f(0.5)=0.8
+                // Polynomial approximation: avoids powf
+                float omk = 1.0f - k;
+                float omk2 = omk * omk;
+                bitcrushFilter01 = 1.0f - omk2 * (0.5f + 0.5f * omk); // approx (1-k)^2.3
             }
             macros.tail        = params[TAIL_PARAM].getValue();
             macros.drift       = params[DRIFT_PARAM].getValue();
@@ -2042,6 +2046,11 @@ struct Phaseon : Module {
             // Apply macros → voice parameters
             applyMacros(voice, macros, wavetableBank, args.sampleRate);
 
+            // Update sample-rate-dependent caches
+            voice.setSampleRate(args.sampleRate);
+            polish.prepare(args.sampleRate);
+            polish.updateHfCutoff(voice.fundamentalHz, macros.edge, args.sampleRate);
+
 #ifndef METAMODULE
             // DEBUG: log tableIndex after applyMacros
             {
@@ -2108,14 +2117,13 @@ struct Phaseon : Module {
         // 0..+12 dB as filtering increases to max.
         if (bitcrushFilter01 > 0.0005f) {
             float t = clamp01(bitcrushFilter01);
-            float gain = powf(10.0f, (12.0f * t) / 20.0f);
+            // Fast approximation of 10^(12*t/20) which is 3.981^t
+            float gain = 1.0f + t * (0.8f + t * (1.2f + t * 0.98f));
             outL *= gain;
             outR *= gain;
         }
 
         // Output polish (finished / punchy / slightly dangerous)
-        // Prepare is cheap and keeps state stable across sample rate changes.
-        polish.prepare(args.sampleRate);
         polish.process(outL, outR, voice.fundamentalHz, macros.edge, args.sampleRate);
 
         // Scale to Rack levels (±5V nominal)
@@ -2212,10 +2220,28 @@ struct Phaseon : Module {
             json_object_set_new(rootJ, "envRelShape", rJ);
         }
 
+#ifdef METAMODULE
+        // Persist the MorphWorx plugin version on MetaModule so firmware can
+        // refuse to load patches created by a different MorphWorx build.
+        json_object_set_new(rootJ, "morphworx_version", json_string(MORPHWORX_VERSION_STRING));
+#endif
+
         return rootJ;
     }
 
     void dataFromJson(json_t* rootJ) override {
+        // Before applying any complex state on MetaModule, enforce that the
+        // patch was created by the same MorphWorx build. If not, bail out and
+        // leave the voice in a safe default configuration.
+#ifdef METAMODULE
+        json_t* verJ = json_object_get(rootJ, "morphworx_version");
+        if (verJ && json_is_string(verJ)) {
+            const char* saved = json_string_value(verJ);
+            if (!saved || std::string(saved) != std::string(MORPHWORX_VERSION_STRING)) {
+                return;
+            }
+        }
+#endif
         json_t* nameJ = json_object_get(rootJ, "presetName");
         if (nameJ) presetName = json_string_value(nameJ);
 
@@ -2848,25 +2874,31 @@ struct PhaseonWidget : ModuleWidget {
 
             // Row E: LFO trimpots (OP SEL section: RATE / PHASE / DEFORM / AMP)
             // Use tighter 7mm spacing and small trimpots so they sit closer together.
+#ifdef METAMODULE
+            using PhaseonSmallTrimWidget = Trimpot;
+#else
+            using PhaseonSmallTrimWidget = SmallTrimpot;
+#endif
+
             const float lfoCol0 = wmcol1;          // RATE
             const float lfoCol1 = wmcol1 + 7.0f;   // PHASE
             const float lfoCol2 = wmcol1 + 14.0f;  // DEFORM
             const float lfoCol3 = wmcol1 + 21.0f;  // AMP
-            addParam(createParamCentered<SmallTrimpot>(mm2px(Vec(lfoCol0, wRowE)).plus(modShiftPx), module, Phaseon::LFO_RATE_PARAM));
-            addParam(createParamCentered<SmallTrimpot>(mm2px(Vec(lfoCol1, wRowE)).plus(modShiftPx), module, Phaseon::LFO_PHASE_PARAM));
-            addParam(createParamCentered<SmallTrimpot>(mm2px(Vec(lfoCol2, wRowE)).plus(modShiftPx), module, Phaseon::LFO_DEFORM_PARAM));
-            addParam(createParamCentered<SmallTrimpot>(mm2px(Vec(lfoCol3, wRowE)).plus(modShiftPx), module, Phaseon::LFO_AMP_PARAM));
+            addParam(createParamCentered<PhaseonSmallTrimWidget>(mm2px(Vec(lfoCol0, wRowE)).plus(modShiftPx), module, Phaseon::LFO_RATE_PARAM));
+            addParam(createParamCentered<PhaseonSmallTrimWidget>(mm2px(Vec(lfoCol1, wRowE)).plus(modShiftPx), module, Phaseon::LFO_PHASE_PARAM));
+            addParam(createParamCentered<PhaseonSmallTrimWidget>(mm2px(Vec(lfoCol2, wRowE)).plus(modShiftPx), module, Phaseon::LFO_DEFORM_PARAM));
+            addParam(createParamCentered<PhaseonSmallTrimWidget>(mm2px(Vec(lfoCol3, wRowE)).plus(modShiftPx), module, Phaseon::LFO_AMP_PARAM));
 
             // Per-operator VOLUME trims (OP1..OP6) — compact single-row layout using the same trimpot size as the LFO trims.
             const float opVolRow = wRowE + 7.0f;
             const float opVolDx  = 6.0f; // tighter spacing
             const float opVolStart = wmcol1 - opVolDx;
-            addParam(createParamCentered<SmallTrimpot>(mm2px(Vec(opVolStart + opVolDx * 0.0f, opVolRow)).plus(modShiftPx), module, Phaseon::OP1_LEVEL_TRIM_PARAM));
-            addParam(createParamCentered<SmallTrimpot>(mm2px(Vec(opVolStart + opVolDx * 1.0f, opVolRow)).plus(modShiftPx), module, Phaseon::OP2_LEVEL_TRIM_PARAM));
-            addParam(createParamCentered<SmallTrimpot>(mm2px(Vec(opVolStart + opVolDx * 2.0f, opVolRow)).plus(modShiftPx), module, Phaseon::OP3_LEVEL_TRIM_PARAM));
-            addParam(createParamCentered<SmallTrimpot>(mm2px(Vec(opVolStart + opVolDx * 3.0f, opVolRow)).plus(modShiftPx), module, Phaseon::OP4_LEVEL_TRIM_PARAM));
-            addParam(createParamCentered<SmallTrimpot>(mm2px(Vec(opVolStart + opVolDx * 4.0f, opVolRow)).plus(modShiftPx), module, Phaseon::OP5_LEVEL_TRIM_PARAM));
-            addParam(createParamCentered<SmallTrimpot>(mm2px(Vec(opVolStart + opVolDx * 5.0f, opVolRow)).plus(modShiftPx), module, Phaseon::OP6_LEVEL_TRIM_PARAM));
+            addParam(createParamCentered<PhaseonSmallTrimWidget>(mm2px(Vec(opVolStart + opVolDx * 0.0f, opVolRow)).plus(modShiftPx), module, Phaseon::OP1_LEVEL_TRIM_PARAM));
+            addParam(createParamCentered<PhaseonSmallTrimWidget>(mm2px(Vec(opVolStart + opVolDx * 1.0f, opVolRow)).plus(modShiftPx), module, Phaseon::OP2_LEVEL_TRIM_PARAM));
+            addParam(createParamCentered<PhaseonSmallTrimWidget>(mm2px(Vec(opVolStart + opVolDx * 2.0f, opVolRow)).plus(modShiftPx), module, Phaseon::OP3_LEVEL_TRIM_PARAM));
+            addParam(createParamCentered<PhaseonSmallTrimWidget>(mm2px(Vec(opVolStart + opVolDx * 3.0f, opVolRow)).plus(modShiftPx), module, Phaseon::OP4_LEVEL_TRIM_PARAM));
+            addParam(createParamCentered<PhaseonSmallTrimWidget>(mm2px(Vec(opVolStart + opVolDx * 4.0f, opVolRow)).plus(modShiftPx), module, Phaseon::OP5_LEVEL_TRIM_PARAM));
+            addParam(createParamCentered<PhaseonSmallTrimWidget>(mm2px(Vec(opVolStart + opVolDx * 5.0f, opVolRow)).plus(modShiftPx), module, Phaseon::OP6_LEVEL_TRIM_PARAM));
 
 #ifndef METAMODULE
             const Vec wLabelSz = Vec(60.0f, 10.0f);

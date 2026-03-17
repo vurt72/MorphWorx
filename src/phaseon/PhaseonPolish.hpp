@@ -125,14 +125,18 @@ struct OutputPolish {
     DcBlocker dcL, dcR;
     TransientClipper clip;
     OnePoleLP hf;
+    bool prepared = false;
 
     void reset() {
         dcL.reset(); dcR.reset();
         clip.reset();
         hf.reset();
+        prepared = false;
     }
 
     void prepare(float sampleRate) {
+        if (prepared) return;
+        prepared = true;
         // Fixed DC cut
         dcL.setCutoff(12.0f, sampleRate);
         dcR.setCutoff(12.0f, sampleRate);
@@ -145,6 +149,11 @@ struct OutputPolish {
         l = dcL.process(l);
         r = dcR.process(r);
 
+#ifdef METAMODULE
+        // MetaModule: skip saturation + transient clipper to save CPU
+        // Just do HF smoothing (already precomputed coefficient)
+        hf.process(l, r);
+#else
         // Edge-driven asymmetric saturation (character wins)
         float drive = std::max(0.0f, std::min(1.0f, edge01));
         float asym = 0.10f + 0.10f * drive;
@@ -157,14 +166,21 @@ struct OutputPolish {
         clip.process(l, r);
 
         // Dynamic HF smoothing: more smoothing at higher pitch + higher drive
+        // Coefficient is precomputed via updateHfCutoff() at control rate
+        hf.process(l, r);
+#endif
+    }
+
+    // Call this at control rate (~32 samples), not per-sample
+    void updateHfCutoff(float fundamentalHz, float edge01, float sampleRate) {
         float f = std::max(20.0f, fundamentalHz);
-        float pitchNorm = std::min(1.0f, f / 2000.0f); // ~0..1 over musical range
+        float drive = std::max(0.0f, std::min(1.0f, edge01));
+        float pitchNorm = std::min(1.0f, f / 2000.0f);
         float cutoff = 18000.0f;
         cutoff *= (1.0f - 0.55f * drive);
         cutoff *= (1.0f - 0.35f * pitchNorm);
         cutoff = std::max(3500.0f, std::min(18000.0f, cutoff));
         hf.setCutoff(cutoff, sampleRate);
-        hf.process(l, r);
     }
 };
 

@@ -28,10 +28,31 @@ else()
     message(STATUS "METAMODULE_SDK_DIR defaulting to: ${METAMODULE_SDK_DIR}")
 endif()
 
+# The MetaModule SDK optionally validates `plugin-mm.json` via `jq`.
+# On Windows, a stale cached `jq.exe` path can break builds even when the JSON is valid.
+# Force-disable jq detection and provide a Python-based validator instead.
+if(WIN32)
+    set(JQ_EXECUTABLE "" CACHE FILEPATH "jq executable (disabled; use Python validation)" FORCE)
+endif()
+
 include(${METAMODULE_SDK_DIR}/plugin.cmake)
 
 # --- Project ---
-project(MorphWorx VERSION 2.0.0 LANGUAGES C CXX ASM)
+project(MorphWorx LANGUAGES C CXX ASM)
+
+# Keep the MetaModule project's notion of the MorphWorx version in sync with
+# the single authoritative definition in src/version.h and plugin.json.
+#
+# Use a relative script path so this works cleanly under MSYS as well as
+# native Windows CMake without confusing path rewriting.
+execute_process(
+    COMMAND python ../tools/gen_plugin_json.py
+    WORKING_DIRECTORY ${CMAKE_CURRENT_LIST_DIR}
+    RESULT_VARIABLE GEN_PJ_RESULT
+)
+if(NOT GEN_PJ_RESULT EQUAL 0)
+    message(FATAL_ERROR "Failed to sync plugin.json from src/version.h (gen_plugin_json.py)")
+endif()
 
 
 # --- Static library target for MetaModule SDK ---
@@ -43,7 +64,8 @@ target_sources(MorphWorx PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/../src/BreakcoreDrums.cpp
     ${CMAKE_CURRENT_LIST_DIR}/../src/SlideWyrm.cpp
     ${CMAKE_CURRENT_LIST_DIR}/../src/PhaseWarpedDrums.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/../src/Phaseon.cpp
+    # Phaseon1: performance-first Phaseon variant for MetaModule
+    ${CMAKE_CURRENT_LIST_DIR}/../src/Phaseon1.cpp
     ${CMAKE_CURRENT_LIST_DIR}/../src/phaseon/PhaseonOperator.cpp
     ${CMAKE_CURRENT_LIST_DIR}/../src/phaseon/PhaseonWavetable.cpp
     ${CMAKE_CURRENT_LIST_DIR}/../src/core/MetricEngine.cpp
@@ -112,4 +134,12 @@ create_plugin(
     PLUGIN_JSON   ${MORPHWORX_PLUGIN_JSON}
     SOURCE_ASSETS ${CMAKE_CURRENT_LIST_DIR}/assets
     DESTINATION   ${CMAKE_CURRENT_LIST_DIR}/metamodule-plugins
+)
+
+# Always validate plugin-mm.json using Python (works on Windows without MSYS2/jq).
+add_custom_target(VALIDATE_PLUGIN_MM_JSON ALL
+    COMMAND python -c "import json, pathlib; p=pathlib.Path(r'${CMAKE_CURRENT_LIST_DIR}/plugin-mm.json'); json.loads(p.read_text(encoding='utf-8-sig'));"
+    VERBATIM
+    USES_TERMINAL
+    COMMENT "Validating plugin-mm.json (python)"
 )

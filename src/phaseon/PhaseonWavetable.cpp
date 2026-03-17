@@ -987,8 +987,13 @@ void WavetableBank::generateBuiltins() {
     tables.clear();
     builtinCount = 0;
 
+#ifdef METAMODULE
+    constexpr int N = 256;     // 8x smaller tables — fits in L1 cache
+    constexpr int MF = 4;      // fewer morph frames
+#else
     constexpr int N = 2048;
     constexpr int MF = 16; // morph frames for multi-frame tables
+#endif
 
     // Curated built-in set (compact indices 0..10):
     // 0 Saw, 1 Formant, 2 Harsh, 3 FMStack, 4 ImpactPulse,
@@ -1193,7 +1198,9 @@ int WavetableBank::loadFromWav(const std::string& path, int expectedFrameSize) {
     // Convert raw to float samples (mono, take first channel)
     int bytesPerSample = bitsPerSample / 8;
     int bytesPerFrame = bytesPerSample * numChannels;
-    int totalSamples = (int)(dataSize / bytesPerFrame);
+    // Guard against corrupted fmt chunk (failed fread leaves fields at 0).
+    if (bytesPerSample < 1 || bytesPerFrame < 1) return -1;
+    int totalSamples = (int)(dataSize / (uint32_t)bytesPerFrame);
     if (totalSamples < 1) return -1;
 
     std::vector<float> samples(totalSamples);
@@ -1220,8 +1227,13 @@ int WavetableBank::loadFromWav(const std::string& path, int expectedFrameSize) {
     // Build wavetable: auto-detect frames from total size
     int frameSize = expectedFrameSize;
     if (frameSize <= 0) frameSize = 2048;
+    // If the file is shorter than one expected frame, treat it as a single-frame table
+    // of whatever length it actually has (prevents out-of-range copies).
+    if (totalSamples < frameSize) frameSize = totalSamples;
+
     int frameCount = std::max(1, totalSamples / frameSize);
     int usedSamples = frameCount * frameSize;
+    if (usedSamples > totalSamples) usedSamples = totalSamples;
 
     Wavetable wt;
     // Extract name from filename

@@ -30,6 +30,10 @@ struct PhaseonEnvelope {
     Stage stage = Off;
     float level = 0.0f;
 
+    // Block-linearized: increment per sample (set by updateBlock)
+    float levelInc = 0.0f;
+    float levelTarget = 0.0f;
+
     void gate(bool on) {
         if (on) {
             stage = Attack;
@@ -38,23 +42,88 @@ struct PhaseonEnvelope {
         }
     }
 
-    void reset() { stage = Off; level = 0.0f; }
+    void reset() { stage = Off; level = 0.0f; levelInc = 0.0f; }
 
     // Apply curve shaping to a linear 0..1 value.
     // curve > 0 = exponential (snappy attack, lingering decay)
     // curve < 0 = logarithmic (soft fade-in, quick drop decay)
     static float shapeCurve(float x, float c) {
+        x = std::max(0.0f, std::min(1.0f, x));
         if (c > 0.01f) {
-            // Exponential: pow(x, 1+c*2)  — higher curve = snappier
-            return std::pow(std::max(0.0f, std::min(1.0f, x)), 1.0f + c * 2.0f);
+            float w = c * 0.9f; 
+            return (x * (1.0f - w)) / (1.0f - w * x);
         } else if (c < -0.01f) {
-            // Logarithmic: 1 - pow(1-x, 1+|c|*2)  — soft onset
             float ac = -c;
-            return 1.0f - std::pow(std::max(0.0f, 1.0f - std::min(1.0f, x)), 1.0f + ac * 2.0f);
+            float w = ac * 0.9f;
+            float omx = 1.0f - x;
+            return 1.0f - (omx * (1.0f - w)) / (1.0f - w * omx);
         }
-        return x; // linear
+        return x;
     }
 
+    // Call once per block (e.g. every 16 or 32 samples) to compute
+    // the linearized increment. Then per-sample just call tickFast().
+    void updateBlock(float blockDt) {
+        // Compute where the envelope will be after blockDt seconds.
+        // This mirrors the old per-sample logic but runs once per block.
+        float future = level;
+        switch (stage) {
+        case Attack:
+            future += blockDt / std::max(attack, 0.0005f);
+            if (future >= 1.0f) { future = 1.0f; }
+            break;
+        case Decay: {
+            float decayRate = blockDt / std::max(decay, 0.0005f) * (1.0f - sustain);
+            if (curve > 0.01f) decayRate *= (1.0f - curve * 0.6f);
+            else if (curve < -0.01f) decayRate *= (1.0f - curve * 0.4f);
+            future -= decayRate;
+            if (future <= sustain) future = sustain;
+            break;
+        }
+        case Sustain:
+            future = sustain;
+            break;
+        case Release:
+            future -= blockDt / std::max(release, 0.0005f) * level;
+            if (future <= 0.0001f) future = 0.0f;
+            break;
+        case Off:
+            future = 0.0f;
+            break;
+        }
+        levelTarget = future;
+    }
+
+    // Call once per block AFTER the per-sample loop to commit stage transitions
+    void commitBlock() {
+        level = levelTarget;
+        switch (stage) {
+        case Attack:
+            if (level >= 1.0f) { level = 1.0f; stage = Decay; }
+            break;
+        case Decay:
+            if (level <= sustain) {
+                level = sustain;
+                stage = loop ? Attack : Sustain;
+            }
+            break;
+        case Release:
+            if (level <= 0.0001f) { level = 0.0f; stage = Off; }
+            break;
+        default: break;
+        }
+    }
+
+    // Per-sample: just linear interpolation toward target (ONE add)
+    inline float tickFast(float invBlockSize) {
+        level += (levelTarget - level) * invBlockSize;
+        if (stage == Attack && curve != 0.0f) {
+            return shapeCurve(level, curve);
+        }
+        return level;
+    }
+
+    // Legacy per-sample tick (used for non-block-processed paths)
     float tick(float dt) {
         switch (stage) {
         case Attack:
@@ -63,18 +132,12 @@ struct PhaseonEnvelope {
             break;
         case Decay: {
             float decayRate = dt / std::max(decay, 0.0005f) * (1.0f - sustain);
-            // Positive curve makes decay linger longer (convex shape)
             if (curve > 0.01f) decayRate *= (1.0f - curve * 0.6f);
-            else if (curve < -0.01f) decayRate *= (1.0f - curve * 0.4f); // negative curve = faster drop
+            else if (curve < -0.01f) decayRate *= (1.0f - curve * 0.4f);
             level -= decayRate;
             if (level <= sustain) {
                 level = sustain;
-                if (loop) {
-                    // AD loop: bounce back to Attack once we hit the floor.
-                    stage = Attack;
-                } else {
-                    stage = Sustain;
-                }
+                stage = loop ? Attack : Sustain;
             }
             break;
         }
@@ -89,7 +152,6 @@ struct PhaseonEnvelope {
             level = 0.0f;
             break;
         }
-        // Apply curve shaping to output (attack phase only — shapes the ramp)
         if (stage == Attack && curve != 0.0f) {
             return shapeCurve(level, curve);
         }
@@ -145,7 +207,11 @@ struct PhaseonModRuntime {
 
 // ─── Voice ──────────────────────────────────────────────────────────
 struct PhaseonVoice {
+#ifdef METAMODULE
+    static constexpr int kNumOps = 4;
+#else
     static constexpr int kNumOps = 6;
+#endif
 
     Operator ops[kNumOps];
     PhaseonEnvelope ampEnv;        // master amplitude envelope
@@ -172,10 +238,10 @@ struct PhaseonVoice {
     float macroLfoAmount = 0.0f;
 
     // Per-LFO user controls (set by applyMacros from module trimpots), per-operator
-    float lfoRateUser[2][kNumOps]    = { {0.5f,0.5f,0.5f,0.5f,0.5f,0.5f}, {0.5f,0.5f,0.5f,0.5f,0.5f,0.5f} };    // 0..1 mapped to Hz mult
-    float lfoPhaseUser[2][kNumOps]   = { {0.0f,0.0f,0.0f,0.0f,0.0f,0.0f}, {0.0f,0.0f,0.0f,0.0f,0.0f,0.0f} };    // 0..1 phase offset
-    float lfoDeformUser[2][kNumOps]  = { {0.0f,0.0f,0.0f,0.0f,0.0f,0.0f}, {0.0f,0.0f,0.0f,0.0f,0.0f,0.0f} };    // 0..1 shape morph
-    float lfoAmpUser[2][kNumOps]     = { {1.0f,1.0f,1.0f,1.0f,1.0f,1.0f}, {1.0f,1.0f,1.0f,1.0f,1.0f,1.0f} };    // 0..1 amplitude
+    float lfoRateUser[2][6]    = { {0.5f,0.5f,0.5f,0.5f,0.5f,0.5f}, {0.5f,0.5f,0.5f,0.5f,0.5f,0.5f} };    // 0..1 mapped to Hz mult
+    float lfoPhaseUser[2][6]   = { {0.0f,0.0f,0.0f,0.0f,0.0f,0.0f}, {0.0f,0.0f,0.0f,0.0f,0.0f,0.0f} };    // 0..1 phase offset
+    float lfoDeformUser[2][6]  = { {0.0f,0.0f,0.0f,0.0f,0.0f,0.0f}, {0.0f,0.0f,0.0f,0.0f,0.0f,0.0f} };    // 0..1 shape morph
+    float lfoAmpUser[2][6]     = { {1.0f,1.0f,1.0f,1.0f,1.0f,1.0f}, {1.0f,1.0f,1.0f,1.0f,1.0f,1.0f} };    // 0..1 amplitude
     int   lfoTargetOp[2]             = {-1, -1};        // -1=ALL, 0..5=specific op
 
     // Cross-operator coupling network (0..1)
@@ -246,10 +312,27 @@ struct PhaseonVoice {
     float cachedNetworkStrength = 0.0f;
     float cachedNetworkCoeff = 0.0f;
 
+    // Cached per-sample constants (set at control rate or sample rate change)
+    float cachedDt = 1.0f / 48000.0f;
+    float cachedRandCoeff = 0.05f;
+    float cachedChaosSlewCoeff = 0.05f;
+    float cachedChaosCleanCoeff = 0.05f;
+
+    // Cached block-rate LFO values
+    float cachedLfo1Op[kNumOps] = {};
+    float cachedLfo2Op[kNumOps] = {};
+    float cachedMicro = 0.0f;
+
+    // Cached formant saturation normalization (only depends on formantAmount)
+    float cachedFormantTanhNorm = 1.0f;
+
     // Chaos state (per operator)
     float chaosValue[kNumOps] = {};
     float chaosTarget[kNumOps] = {};
     float chaosRetargetTimer = 0.0f;
+    struct RouteDest { int d; float wp; float wd; };
+    RouteDest opRoutes[kNumOps][kNumOps];
+    int opRouteCount[kNumOps] = {0};
 
     // Formant shaper (subtle by default, can become obvious when driven)
     struct Biquad {
@@ -272,10 +355,12 @@ struct PhaseonVoice {
             float f = std::max(10.0f, std::min(f0, fs * 0.45f));
             float q = std::max(0.30f, std::min(Q, 32.0f));
 
+            // Peaking EQ using fast approximations for trig
             float A = powf(10.0f, gainDb / 40.0f);
             float w0 = 6.283185307f * (f / fs);
-            float cw = cosf(w0);
-            float sw = sinf(w0);
+            // Fast sin/cos approximation for biquad coefficients
+            float cw = phaseon_fast_cos_w0(w0);
+            float sw = phaseon_fast_sin_w0(w0);
             float alpha = sw / (2.0f * q);
 
             float b0n = 1.0f + alpha * A;
@@ -424,18 +509,39 @@ struct PhaseonVoice {
         networkDivider = 0;
     }
 
+    // Call once when sample rate changes (or at init)
+    void setSampleRate(float sampleRate) {
+        cachedDt = 1.0f / std::max(1.0f, sampleRate);
+    }
+
     // Main per-sample processing
     void tick(const WavetableBank& bank, float sampleRate) {
-        const float dt = 1.0f / sampleRate;
+        const float dt = cachedDt;
 
-        // Amp envelope: still ticked for click-suppression / legacy behavior,
-        // but amplitude shaping is now handled by per-operator envelopes.
-        float envLevel = ampEnv.tick(dt);
+        // Block-rate envelope linearization (every 16 samples)
+        // This replaces 7 divisions per sample with 7 divisions per 16 samples
+        static constexpr int kEnvBlockSize = 16;
+        static constexpr float kInvEnvBlock = 1.0f / (float)kEnvBlockSize;
+        if (networkDivider == 0) {
+            float blockDt = dt * kEnvBlockSize;
+            ampEnv.updateBlock(blockDt);
+            for (int i = 0; i < kNumOps; ++i)
+                opEnvs[i].updateBlock(blockDt);
+        }
 
-        // Per-operator modulation envelopes
+        // Per-sample: just linear interpolation (1 multiply + 1 add each)
+        float envLevel = ampEnv.tickFast(kInvEnvBlock);
+
         float modEnv[kNumOps];
         for (int i = 0; i < kNumOps; ++i) {
-            modEnv[i] = opEnvs[i].tick(dt);
+            modEnv[i] = opEnvs[i].tickFast(kInvEnvBlock);
+        }
+
+        // Commit envelope stage transitions at block boundary
+        if (networkDivider == 0) {
+            ampEnv.commitBlock();
+            for (int i = 0; i < kNumOps; ++i)
+                opEnvs[i].commitBlock();
         }
 
         // Transient spike
@@ -444,81 +550,84 @@ struct PhaseonVoice {
         // Motion engine (life system): 2 LFOs + smoothed random lane + micro movement
         float motion = std::max(0.0f, std::min(1.0f, motionAmount));
 
-        // User-controlled LFO rates: map 0..1 knob to Hz multiplier
-        // Rate=0.5 gives roughly the old hardcoded speed (1x)
-        auto getRateMult = [](float v) {
-            if (v >= 0.49f && v <= 0.51f) return 1.0f;
-            if (v > 0.5f) {
-                // 0.5..1.0 maps to 1x..8x
-                return 1.0f + (v - 0.5f) * 2.0f * 7.0f;
-            } else {
-                // 0.0..0.5 maps to /32, /16, /8, /4, /3, /2
+        // ── Block-rate LFO + random updates (every 16 samples) ────────
+        float macroLfo = clamp01(macroLfoAmount);
+        if (networkDivider == 0) {
+            auto getRateMult = [](float v) {
+                if (v >= 0.49f && v <= 0.51f) return 1.0f;
+                if (v > 0.5f) return 1.0f + (v - 0.5f) * 2.0f * 7.0f;
                 int divs[] = {32, 16, 8, 4, 3, 2};
                 int idx = (int)(v * 2.0f * 5.99f);
-                if (idx < 0) idx = 0;
-                if (idx > 5) idx = 5;
+                if (idx < 0) idx = 0; if (idx > 5) idx = 5;
                 return 1.0f / (float)divs[idx];
-            }
-        };
-        
-        // Scalar LFO phases (used by mod-matrix sources); follow operator 0 settings.
-        float rate1 = 0.18f * getRateMult(lfoRateUser[0][0]);
-        float rate2Base = 0.41f * getRateMult(lfoRateUser[1][0]);
-        float rateScale = 0.25f + motion * 2.5f;
-        lfo1Phase += dt * (rate1 * rateScale);
-        lfo2Phase += dt * (rate2Base * rateScale);
-        if (lfo1Phase >= 1.0f) lfo1Phase -= 1.0f;
-        if (lfo2Phase >= 1.0f) lfo2Phase -= 1.0f;
+            };
 
-        // Per-operator LFO2 phase (required for per-op rate control)
-        for (int i = 0; i < kNumOps; ++i) {
-            float rate2 = 0.41f * getRateMult(lfoRateUser[1][i]);
-            lfo2PhaseOp[i] += dt * (rate2 * rateScale);
-            if (lfo2PhaseOp[i] >= 1.0f) lfo2PhaseOp[i] -= 1.0f;
+            float dtBlock = dt * 16.0f;
+            float rate1 = 0.18f * getRateMult(lfoRateUser[0][0]);
+            float rate2Base = 0.41f * getRateMult(lfoRateUser[1][0]);
+            float rateScale = 0.25f + motion * 2.5f;
+
+            lfo1Phase += dtBlock * (rate1 * rateScale);
+            lfo2Phase += dtBlock * (rate2Base * rateScale);
+            if (lfo1Phase >= 1.0f) lfo1Phase -= std::floor(lfo1Phase);
+            if (lfo2Phase >= 1.0f) lfo2Phase -= std::floor(lfo2Phase);
+
+            for (int i = 0; i < kNumOps; ++i) {
+                float rate2 = 0.41f * getRateMult(lfoRateUser[1][i]);
+                lfo2PhaseOp[i] += dtBlock * (rate2 * rateScale);
+                if (lfo2PhaseOp[i] >= 1.0f) lfo2PhaseOp[i] -= std::floor(lfo2PhaseOp[i]);
+            }
+
+            float lfo1StaggerAmt = (lfoTargetOp[0] == -1) ? motion : 0.0f;
+            float lfo2StaggerAmt = (lfoTargetOp[1] == -1) ? macroLfo : 0.0f;
+
+            for (int i = 0; i < kNumOps; ++i) {
+                float p1 = lfo1Phase + lfoPhaseUser[0][0];
+                if (lfo1StaggerAmt > 0.0001f) p1 += ((float)i / 6.0f) * lfo1StaggerAmt;
+                p1 -= std::floor(p1);
+                cachedLfo1Op[i] = deformLfo(p1, lfoDeformUser[0][0]) * lfoAmpUser[0][0];
+
+                float p2 = lfo2PhaseOp[i] + lfoPhaseUser[1][i];
+                if (lfo2StaggerAmt > 0.0001f) p2 += ((float)i / 6.0f) * lfo2StaggerAmt;
+                p2 -= std::floor(p2);
+                cachedLfo2Op[i] = deformLfo(p2, lfoDeformUser[1][i]) * lfoAmpUser[1][i];
+            }
+
+            // Random lane
+            randTimer -= dtBlock;
+            if (randTimer <= 0.0f) {
+                randTimer = 0.18f + (1.0f - motion) * 0.25f;
+                randTarget = cheapRandom();
+            }
+
+            // Precompute slew coefficients (depend only on motion+sampleRate)
+            cachedRandCoeff = 1.0f - expf(-dtBlock / (0.06f + (1.0f - motion) * 0.08f));
+
+            // Micro movement
+            microPhase += dtBlock * (220.0f + motion * 520.0f);
+            if (microPhase >= 1.0f) microPhase -= std::floor(microPhase);
+            cachedMicro = phaseon_fast_sin_01(microPhase);
+
+            // Chaos slew coefficients
+            if (chaosAmount > 0.001f) {
+                float tau = 0.035f + (1.0f - chaosAmount) * 0.12f;
+                cachedChaosSlewCoeff = 1.0f - expf(-dtBlock / tau);
+            }
+            cachedChaosCleanCoeff = 1.0f - expf(-dtBlock / 0.08f);
+
+            // Precompute operator phase increments (avoids division per sample per operator)
+            for (int i = 0; i < kNumOps; ++i) {
+                ops[i].cachedPhaseInc = fundamentalHz * ops[i].ratio * cachedDt;
+            }
         }
 
-        // Compute per-operator LFO values (offset + deform + amplitude)
-        float lfo1Op[kNumOps] = {};
-        float lfo2Op[kNumOps] = {};
+        // Smooth random lane every sample (cheap: 1 multiply+add)
+        randLane += (randTarget - randLane) * cachedRandCoeff;
 
-        // Target=ALL phase staggering:
-        // - LFO1 staggering scales with Motion (0..1) when LFO1 targets ALL
-        // - LFO2 staggering scales with Growl knob (macroLfoAmount) (0..1) when LFO2 targets ALL
-        float lfo1StaggerAmt = (lfoTargetOp[0] == -1) ? motion : 0.0f;
-        float macroLfo = clamp01(macroLfoAmount);
-        float lfo2StaggerAmt = (lfoTargetOp[1] == -1) ? macroLfo : 0.0f;
-
-        for (int i = 0; i < kNumOps; ++i) {
-            // LFO1 (shared params, but per-op staggering)
-            float p1 = lfo1Phase + lfoPhaseUser[0][0];
-            if (lfo1StaggerAmt > 0.0001f) {
-                p1 += ((float)i / 6.0f) * lfo1StaggerAmt; // up to 60° steps
-            }
-            p1 -= floorf(p1);
-            lfo1Op[i] = deformLfo(p1, lfoDeformUser[0][0]) * lfoAmpUser[0][0];
-
-            // LFO2 (per-op params + optional staggering when targeting ALL)
-            float p2 = lfo2PhaseOp[i] + lfoPhaseUser[1][i];
-            if (lfo2StaggerAmt > 0.0001f) {
-                p2 += ((float)i / 6.0f) * lfo2StaggerAmt; // up to 60° steps
-            }
-            p2 -= floorf(p2);
-            lfo2Op[i] = deformLfo(p2, lfoDeformUser[1][i]) * lfoAmpUser[1][i];
-        }
-
-        // Random lane updates a few times per second, then slews smoothly
-        randTimer -= dt;
-        if (randTimer <= 0.0f) {
-            randTimer = 0.18f + (1.0f - motion) * 0.25f;
-            randTarget = cheapRandom();
-        }
-        float randCoeff = 1.0f - expf(-dt / (0.06f + (1.0f - motion) * 0.08f));
-        randLane += (randTarget - randLane) * randCoeff;
-
-        // Very small fast component (near audio rate micro movement)
-        microPhase += dt * (220.0f + motion * 520.0f);
-        if (microPhase >= 1.0f) microPhase -= 1.0f;
-        float micro = sinf(microPhase * 6.283185307f);
+        // Use cached LFO values
+        const float* lfo1Op = cachedLfo1Op;
+        const float* lfo2Op = cachedLfo2Op;
+        float micro = cachedMicro;
 
         // Instability: small random perturbations
         float phaseJitter = 0.0f;
@@ -529,25 +638,23 @@ struct PhaseonVoice {
         }
 
         // FM Chaos: bounded, zone-aware targets that glide
+#ifndef METAMODULE
+        // Chaos disabled on MetaModule for CPU savings
         if (chaosAmount > 0.001f) {
             chaosRetargetTimer -= dt;
-            // Retarget more often when chaos+motion are high
             float retargetRate = 0.8f + 5.0f * chaosAmount + 2.0f * motion;
             if (chaosRetargetTimer <= 0.0f) {
                 chaosRetargetTimer = 1.0f / retargetRate;
                 retargetChaos(false);
             }
-            float tau = 0.035f + (1.0f - chaosAmount) * 0.12f;
-            float c = 1.0f - expf(-dt / tau);
             for (int i = 0; i < kNumOps; ++i) {
-                chaosValue[i] += (chaosTarget[i] - chaosValue[i]) * c;
+                chaosValue[i] += (chaosTarget[i] - chaosValue[i]) * cachedChaosSlewCoeff;
             }
         } else {
-            // Glide back to clean
-            float c = 1.0f - expf(-dt / 0.08f);
             for (int i = 0; i < kNumOps; ++i)
-                chaosValue[i] += (0.0f - chaosValue[i]) * c;
+                chaosValue[i] += (0.0f - chaosValue[i]) * cachedChaosCleanCoeff;
         }
+#endif // !METAMODULE
 
         // Algorithm morph: interpolate routing weights between algo A and algo B
         int algoAIdx = algorithmIndex;
@@ -560,8 +667,11 @@ struct PhaseonVoice {
         // ── NETWORK (cross-operator coupling) ─────────────────────
         // Deterministic, filtered bus built from previous op outputs.
         // Injected as extra phase modulation on top of the selected algorithm.
-        float netAmt = clamp01(networkAmount);
+        float netAmt = 0.0f;
         float netBus = 0.0f;
+#ifndef METAMODULE
+        // Network disabled on MetaModule for CPU savings
+        netAmt = clamp01(networkAmount);
         if (netAmt > 0.0005f) {
             // Update strength + filter coefficient at control rate
             if (++networkDivider >= 32) {
@@ -620,7 +730,31 @@ struct PhaseonVoice {
 
             // One-pole filtering + soft bounding
             networkBusZ += (raw - networkBusZ) * cachedNetworkCoeff;
-            netBus = tanhf(networkBusZ * 3.60f);
+            netBus = phaseon_fast_tanh(networkBusZ * 3.60f);
+        }
+#endif // !METAMODULE
+
+        if (networkDivider == 0) {
+            float dmix = depthModMix;
+            if (dmix < 0.0f) dmix = 0.0f;
+            if (dmix > 1.0f) dmix = 1.0f;
+            auto hasConn_cache = [](const Algorithm& a, int src, int dst) -> float {
+                for (int m = 0; m < a.connectionCount; ++m) {
+                    if (a.connections[m].src == src && a.connections[m].dst == dst) return 1.0f;
+                }
+                return 0.0f;
+            };
+            for (int oi = 0; oi < kNumOps; ++oi) {
+                opRouteCount[oi] = 0;
+                for (int dst = 0; dst < kNumOps; ++dst) {
+                    float wA = hasConn_cache(algoA, oi, dst);
+                    float wB = hasConn_cache(algoB, oi, dst);
+                    float w = wA + (wB - wA) * morph;
+                    if (w > 0.0f) {
+                        opRoutes[oi][opRouteCount[oi]++] = {dst, w * (1.0f - dmix), w * dmix};
+                    }
+                }
+            }
         }
 
         // Macro LFO: use LFO2 as the wobble source, scaled by the macro knob.
@@ -692,6 +826,7 @@ struct PhaseonVoice {
             // PUNCH: boost FM depth on note start (modulators only; morph-aware)
             float effectiveFmDepth = op.fmDepth * depthFactor;
 
+#ifndef METAMODULE
             // NETWORK also shapes FM depth (more profound than PM alone)
             if (netAmt > 0.0005f && cachedNetworkStrength > 0.0005f) {
                 // netDrive is already carrier-protected via dstScale.
@@ -700,6 +835,7 @@ struct PhaseonVoice {
                 if (factor > 6.0f) factor = 6.0f;
                 effectiveFmDepth *= factor;
             }
+#endif
             float punchW = 0.0f;
             if (spikeVal > 0.0001f) {
                 float cA = algoA.isCarrier[i] ? 1.0f : 0.0f;
@@ -711,6 +847,7 @@ struct PhaseonVoice {
             effectiveFmDepth += effectiveFmDepth * (spikeVal * punchW);
             effectiveFmDepth += extraFm;
 
+#ifndef METAMODULE
             // GrowlLoop: treat the operator envelope as an internal LFO that scales FM depth.
             // This makes the wobble clearly audible (dubstep movement) without adding noise.
             float loopW = 0.0f;
@@ -753,6 +890,10 @@ struct PhaseonVoice {
                 if (delta > 3.0f)  delta = 3.0f;
                 effectiveFmDepth *= delta;
             }
+#else
+            // MetaModule simplified: no GrowlLoop, motion wobble, chaos, macro LFO per-op
+            float opFundHz = fundamentalHz;
+#endif
 
             // Save original, apply boosted depth
             float origDepth = op.fmDepth;
@@ -762,15 +903,16 @@ struct PhaseonVoice {
             float origFrame = op.framePos;
             float fp = op.framePos;
 
-            // ── SCRAMBLE secondary target modulation ────────────────
-            // Modulate one secondary operator field using this op's envelope.
-            // The modulation is bipolar around the envelope's sustain level:
-            //   (modEnv[i] - sustain) so attack phase adds, sustain is neutral, release subtracts.
-
             float origFeedback = op.feedback;
             float origPd = op.pdAmount;
             float origWsMix = op.wsMix;
             float origWsDrive = op.wsDrive;
+
+#ifndef METAMODULE
+            // ── SCRAMBLE secondary target modulation ────────────────
+            // Modulate one secondary operator field using this op's envelope.
+            // The modulation is bipolar around the envelope's sustain level:
+            //   (modEnv[i] - sustain) so attack phase adds, sustain is neutral, release subtracts.
 
             if (scrambleSecAmount[i] > 0.001f) {
                 float envDelta = modEnv[i] - opEnvs[i].sustain;
@@ -806,21 +948,27 @@ struct PhaseonVoice {
 
             // Motion WT orbit drift
             if (motion > 0.001f) {
-                // Per-operator LFO1 response (always active; Target switch only changes edit mode)
                 float orbit = 0.035f * lfo1Op[i] + 0.020f * randLane + 0.006f * micro;
                 fp += orbit * motion;
             }
 
             // Instability micro offset
             fp += cheapRandom() * instability * 0.025f;
+#endif // !METAMODULE
             op.framePos = std::max(0.0f, std::min(1.0f, fp));
 
             // Stereo phase spread (width without detune chorus)
             float width = 0.0f;
+#ifndef METAMODULE
             if (motion > 0.001f) {
                 width = motion * (0.06f + 0.04f * (0.5f + 0.5f * lfo1Op[i]));
             }
+#endif
+#ifdef METAMODULE
+            op.unisonCount = 1; // Save ~50% operator cost on embedded
+#else
             op.unisonCount = (motion > 0.08f) ? 2 : 1;
+#endif
             op.unisonDetune = 0.0f; // explicitly avoid chorus detune feel
             op.unisonStereo = 1.0f;
             op.unisonPhaseSpread = width;
@@ -855,18 +1003,11 @@ struct PhaseonVoice {
                 if (extra > 2.25f) extra = 2.25f;
                 modSignal += op.output * extra;
             }
-            float dmix = depthModMix;
-            if (dmix < 0.0f) dmix = 0.0f;
-            if (dmix > 1.0f) dmix = 1.0f;
-            for (int dst = 0; dst < kNumOps; ++dst) {
-                float wA = hasConn(algoA, i, dst);
-                float wB = hasConn(algoB, i, dst);
-                float w = wA + (wB - wA) * morph;
-                if (w <= 0.0f) continue;
-                float wp = w * (1.0f - dmix);
-                float wd = w * dmix;
-                phaseModAccum[dst] += modSignal * wp;
-                depthModAccum[dst] += modSignal * wd;
+            int rc = opRouteCount[i];
+            for (int r = 0; r < rc; ++r) {
+                const auto& rt = opRoutes[i][r];
+                phaseModAccum[rt.d] += modSignal * rt.wp;
+                depthModAccum[rt.d] += modSignal * rt.wd;
             }
         }
 
@@ -880,12 +1021,14 @@ struct PhaseonVoice {
             float cB = algoB.isCarrier[i] ? 1.0f : 0.0f;
             float cw = cA + (cB - cA) * morph;
 
-            // Macro LFO: slight carrier↔modulator drift. At low settings this
+#ifndef METAMODULE
+            // Macro LFO: slight carrier/modulator drift. At low settings this
             // just adds motion; at high settings it can tear the bass apart.
             if (macroLfo > 0.001f) {
                 float drift = lfoGrowlOp[i] * 0.25f * macroLfo; // small, signed offset
                 cw = clamp01(cw + drift);
             }
+#endif
 
             if (cw <= 0.0001f) continue;
             float envAmp = modEnv[i];
@@ -900,12 +1043,13 @@ struct PhaseonVoice {
             sumR *= norm;
         }
 
-        // Gentle soft clip on carrier sum — knee at ±3.0, ceiling ±4.5
+#ifndef METAMODULE
+        // Gentle soft clip on carrier sum — knee at +/-3.0, ceiling +/-4.5
         auto softClipCarrier = [](float x) -> float {
             if (std::fabs(x) > 3.0f) {
                 float sign = (x > 0.f) ? 1.f : -1.f;
                 float over = std::fabs(x) - 3.0f;
-                x = sign * (3.0f + tanhf(over) * 1.5f);
+                x = sign * (3.0f + phaseon_fast_tanh(over) * 1.5f);
             }
             return x;
         };
@@ -916,15 +1060,17 @@ struct PhaseonVoice {
         // This is intentionally independent of routing topology so the control stays consistent.
         if (spikeVal > 0.0001f) {
             // Smooth, bounded gain bump: ~0..+35% depending on PUNCH intensity.
-            float bump = tanhf(spikeVal * 0.85f) * 0.35f;
+            float bump = phaseon_fast_tanh(spikeVal * 0.85f) * 0.35f;
             float g = 1.0f + bump;
             sumL *= g;
             sumR *= g;
         }
+#endif // !METAMODULE
 
         outL = sumL * masterLevel;
         outR = sumR * masterLevel;
 
+#ifndef METAMODULE
         // Global bitcrusher (post-FM, pre-formant). Combines sample-rate
         // reduction (sample-and-hold) with bit-depth reduction so the effect
         // is clearly audible from subtle to extreme.
@@ -939,10 +1085,10 @@ struct PhaseonVoice {
                 // Re-sample and quantize the current signal.
                 // Bit depth: 12 bits at low amt, down toward 4 bits at high amt.
                 float bits = 4.0f + (1.0f - amt) * 8.0f; // 4..12 bits
-                float levels = std::pow(2.0f, bits);
+                float levels = (float)(1 << (int)(bits + 0.5f)); // fast integer power-of-2
                 auto crushSample = [levels](float s) {
                     float v = s * levels;
-                    v = std::floor(v + 0.5f);
+                    v = (float)(int)(v + (v >= 0.0f ? 0.5f : -0.5f)); // fast round-to-int
                     return v / levels;
                 };
                 bitcrushHoldL = crushSample(outL);
@@ -956,8 +1102,10 @@ struct PhaseonVoice {
             --bitcrushSamplesLeft;
         }
 
-        // Formant shaping -- active on all families when formantAmount > 0
-        processFormant(outL, outR, sampleRate);
+        // Formant shaping -- skip entirely when formantAmount is zero
+        if (formantAmount > 0.001f)
+            processFormant(outL, outR, sampleRate);
+#endif // !METAMODULE
     }
 
 private:
@@ -992,9 +1140,8 @@ private:
     }
 
     static inline float deformLfo(float phase01, float deform) {
-        const float TWO_PI = 6.283185307f;
-        // Sine
-        float sine = sinf(phase01 * TWO_PI);
+        // Sine (use fast approximation — this runs at block rate on MetaModule)
+        float sine = phaseon_fast_sin_01(phase01);
         if (deform <= 0.001f) return sine;
         // Triangle: 4*|p-0.5| - 1
         float tri = 4.0f * fabsf(phase01 - 0.5f) - 1.0f;
@@ -1048,12 +1195,11 @@ private:
         float inst = clamp01(instability);
 
         // Nonlinear drive: gentle at low values, ramps up fast when pushed
-        float edgeD = powf(e, 2.2f);
-        float motionD = powf(m, 2.0f);
-        float extreme = powf(fabsf(2.0f * t - 1.0f), 1.7f);
-        float instD = powf(inst, 1.6f);
-        // formantAmount self-powers the drive so formant is audible even at low EDGE
-        float formD = formantAmount * formantAmount; // quadratic: subtle low, strong high
+        float edgeD = e * e * (0.2f + 0.8f * e); // approx powf(e, 2.2)
+        float motionD = m * m;
+        float extreme = fabsf(2.0f * t - 1.0f); extreme *= extreme * (0.3f + 0.7f * extreme); // approx powf(.., 1.7)
+        float instD = inst * inst * (0.4f + 0.6f * inst); // approx powf(inst, 1.6)
+        float formD = formantAmount * formantAmount;
         // Dubstep refactor: FORM should be authoritative. Other macros enhance it,
         // but they shouldn't gate it.
         float drive = 0.60f * edgeD + 0.30f * motionD + 0.35f * extreme + 0.20f * instD + 1.25f * formD;
@@ -1108,20 +1254,20 @@ private:
         // Tracking: blend absolute-ish formants with pitch-relative motion
         float refHz = 110.0f;
         float ratio = std::max(0.25f, fundamentalHz / refHz);
-        float ptrack = powf(ratio, track);
+        float ptrack = 1.0f + (ratio - 1.0f) * track; // linear approx of powf(ratio, track)
         f1 *= ptrack;
         f2 *= ptrack;
         f3 *= ptrack;
 
         // Pitch safety: reduce max strength/Q as we approach Nyquist
         float pitchNorm = clamp01(fundamentalHz / (ny * 0.35f));
-        float strengthPitchAtten = 1.0f - 0.65f * powf(pitchNorm, 1.5f);
+        float strengthPitchAtten = 1.0f - 0.65f * pitchNorm * (0.5f + 0.5f * pitchNorm); // approx powf(pitchNorm, 1.5)
         if (strengthPitchAtten < 0.25f) strengthPitchAtten = 0.25f;
 
         // Q driven by vowelPos (not timbreAmount) for independent growl control
         float qWide = 0.75f;
         float qNarrow = 9.0f;
-        float q = lerpf(qWide, qNarrow, powf(vp, 1.25f));
+        float q = lerpf(qWide, qNarrow, vp * (0.5f + 0.5f * vp)); // approx powf(vp, 1.25)
         // Extra contrast when FORM is high (more vowel definition), but significantly tamer now.
         q *= (1.0f + 0.25f * formD);
 
@@ -1176,11 +1322,20 @@ private:
             bq[1].setPeaking(sr, f2, q2, g2);
             bq[2].setPeaking(sr, f3, q3, g3);
         }
+
+        // Cache formant saturation normalization
+        float hot = clamp01(formantAmount);
+        if (hot > 0.001f) {
+            float d = 1.0f + 3.0f * hot * hot;
+            cachedFormantTanhNorm = 1.0f / phaseon_fast_tanh(d);
+        } else {
+            cachedFormantTanhNorm = 1.0f;
+        }
     }
 
     void processFormant(float& l, float& r, float sampleRate) {
-        // Update coefficients at a light control rate
-        if (++formantDivider >= 16) {
+        // Update coefficients at a relaxed control rate (/64 = ~750Hz at 48kHz)
+        if (++formantDivider >= 64) {
             formantDivider = 0;
             updateFormantCoeffs(sampleRate);
         }
@@ -1202,9 +1357,9 @@ private:
         if (hot > 0.001f) {
             float d = 1.0f + 3.0f * hot * hot;
             float mix = 0.05f + 0.16f * hot; // ~5%..21%
-            float norm = 1.0f / tanhf(d);
+            float norm = cachedFormantTanhNorm;
             auto sat = [&](float x) {
-                return tanhf(x * d) * norm;
+                return phaseon_fast_tanh(x * d) * norm;
             };
             xl = xl * (1.0f - mix) + sat(xl) * mix;
             xr = xr * (1.0f - mix) + sat(xr) * mix;

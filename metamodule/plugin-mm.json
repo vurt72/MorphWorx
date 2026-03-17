@@ -4,7 +4,7 @@
     "MetaModuleBrandAliases": ["MorphWorx", "IDMT"],
     "MetaModulePluginMaintainer": "MorphWorx",
     "MetaModulePluginMaintainerEmail": "",
-    "MetaModuleDescription": "Generative drums, acid patterns, and PreenFM2 synth engine for MetaModule.",
+    "MetaModuleDescription": "MorphWorx MetaModule bundle (version kept in sync with Rack plugin).",
     "MetaModuleIncludedModules": [
         {
             "slug": "Trigonomicon",
@@ -27,8 +27,8 @@
             "name": "Amenolith"
         },
         {
-            "slug": "Phaseon",
-            "name": "Phaseon"
+            "slug": "Phaseon1",
+            "name": "Phaseon1"
         },
         {
             "slug": "Xenostasis",

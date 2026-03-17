@@ -413,22 +413,52 @@ private:
         }
     }
 
-    // Table 3: Substrate -- sub-heavy anchor
-    // Very strong fundamental + octave, rapid rolloff above 5
+    // Table 3: Substrate -- sub-heavy anchor, morphing into pure abyss
+    // Frame 0 preserves the original Substrate tone (h1 dominant, h2 at 0.7).
+    // As frames progress the waveform gets dramatically darker and bassier:
+    //   - h2 (octave) swells from 0.70 to 0.94: mounting warmth/darkness
+    //   - h3 traces a bell-curve arc (peaks at mid-morph) for a deep "boom/growl"
+    //   - h4 steadily rises to 0.36: adds sub-thunder and asymmetric bulk
+    //   - h6 adds a small hump of even-harmonic density mid-morph
+    //   - h5/h7 trail off to zero: no brightness introduced
+    //   - h2/h3/h4 phase-rotate substantially across frames, reshaping the
+    //     waveform geometry for audible timbral motion without any high-freq content
     void generateSubstrate(int table) {
         for (int f = 0; f < XS_FRAMES; f++) {
             std::memset(data[table][f], 0, XS_FRAME_SIZE * sizeof(float));
-            float framePos = (float)f / (float)(XS_FRAMES - 1);
-            for (int h = 1; h <= 16; h++) {
-                float amp;
-                if (h == 1)      amp = 1.0f;
-                else if (h == 2) amp = 0.7f;
-                else if (h <= 5) amp = 0.2f / (float)h;
-                else             amp = 0.03f / (float)h;
+            float fp = (float)f / (float)(XS_FRAMES - 1); // 0 .. 1
 
-                float frameMod = 1.f + 0.1f * std::sin(framePos * M_PI + (float)h * 0.9f);
-                addHarmonic(table, f, h, amp * frameMod, framePos * 0.3f * (float)h);
-            }
+            // h1: massive fundamental, unmoved
+            addHarmonic(table, f, 1, 1.0f, 0.f);
+
+            // h2: octave swells steadily → most dominant "darkness" driver
+            float h2amp = 0.70f + 0.24f * fp;
+            float h2ph  = fp * (float)M_PI;               // 0 → π, reshapes waveform
+            addHarmonic(table, f, 2, h2amp, h2ph);
+
+            // h3: bell-arc -- silent at frame 0, peaks at mid-morph, settles at 0.25
+            // Gives the "groan/boom" quality without any treble
+            float h3amp = 0.07f + 0.45f * std::sin(fp * (float)M_PI);
+            float h3ph  = fp * 2.0f * (float)M_PI;        // full phase sweep = max shape change
+            addHarmonic(table, f, 3, h3amp, h3ph);
+
+            // h4: steadily growing sub-warmth/asymmetry -- pure thunder in late frames
+            float h4amp = 0.03f + 0.33f * fp;
+            float h4ph  = (1.f - fp) * (float)M_PI * 0.8f; // counter-rotates for waveform bulk
+            addHarmonic(table, f, 4, h4amp, h4ph);
+
+            // h5: trace at frame 0, fades to nothing (no residual brightness)
+            float h5amp = 0.04f * (1.f - fp);
+            if (h5amp > 0.003f) addHarmonic(table, f, 5, h5amp, 0.f);
+
+            // h6: small even-harmonic hump, adds density in mid-morph bulge
+            float h6amp = 0.02f + 0.10f * std::sin(fp * (float)M_PI * 0.75f);
+            addHarmonic(table, f, 6, h6amp, fp * (float)M_PI * 0.5f);
+
+            // h7: dying trace for a tiny tail of warmth at start, gone by end
+            float h7amp = 0.015f * (1.f - fp);
+            if (h7amp > 0.003f) addHarmonic(table, f, 7, h7amp, 0.f);
+
             normalizeFrame(table, f);
         }
     }
@@ -969,6 +999,249 @@ struct XsRandomWalk {
     }
 };
 
+// ── 4-pole Moog-style ladder filter (warm, 24dB/oct, self-oscillates) ────────
+struct XsLadderFilter {
+    float s[4][2] = {};   // state per stage, per channel
+    float f  = 0.1f;      // frequency coeff
+    float r  = 0.f;       // resonance feedback (0..~4)
+    float sampleRate = 48000.f;
+    void setSampleRate(float sr) { sampleRate = std::max(1000.f, sr); }
+    void reset() { memset(s, 0, sizeof(s)); }
+
+    void setParams(float cutNorm, float resNorm) {
+        float fMin = 20.f;
+        float fMax = sampleRate * 0.45f;
+        float fc = fMin * std::exp(cutNorm * std::log(fMax / fMin));
+        f = 2.f * std::sin((float)M_PI * fc / sampleRate);
+        f = clamp(f, 0.001f, 0.95f);
+        r = resNorm * resNorm * 3.9f;  // approaches self-osc near max
+    }
+
+    inline float processOne(int ch, float x) {
+        // Safety guard: if state ever goes invalid, reset this channel to recover audio.
+        if (!std::isfinite(s[0][ch]) || !std::isfinite(s[1][ch])
+            || !std::isfinite(s[2][ch]) || !std::isfinite(s[3][ch])) {
+            s[0][ch] = s[1][ch] = s[2][ch] = s[3][ch] = 0.f;
+        }
+
+        float fb = r * s[3][ch];
+#ifdef METAMODULE
+        // MetaModule: lighter ladder core to cut CPU.
+        // Keep one soft nonlinearity at input for character/stability,
+        // then run linear 4-pole integration (much cheaper than tanh per stage).
+        float t = (x - fb) * 0.5f;
+        t = t / (1.f + ::fabsf(t));
+        for (int i = 0; i < 4; i++) {
+            float si = s[i][ch];
+            si += f * (t - si);
+            // Gentle hard-limit prevents runaway states while preserving feel.
+            si = clamp(si, -4.f, 4.f);
+            s[i][ch] = si;
+            t = si;
+        }
+#else
+        float t = std::tanh((x - fb) * 0.5f);
+        for (int i = 0; i < 4; i++) {
+            float nt = std::tanh(s[i][ch]);
+            s[i][ch] += f * (t - nt);
+            t = s[i][ch];
+        }
+#endif
+        float y = s[3][ch];
+        if (!std::isfinite(y)) {
+            s[0][ch] = s[1][ch] = s[2][ch] = s[3][ch] = 0.f;
+            return 0.f;
+        }
+        return y;
+    }
+
+    void process(float& L, float& R) {
+        L = processOne(0, L);
+        R = processOne(1, R);
+    }
+};
+
+// ── Pitch-tracked feedback comb (metallic resonance, harmonic sheen) ─────────
+struct XsCombFilter {
+    static constexpr int MAX_DELAY = 8192;
+    float bufL[MAX_DELAY] = {};
+    float bufR[MAX_DELAY] = {};
+    int   writePosL = 0, writePosR = 0;
+    int   delayLen  = 100;
+    float feedback  = 0.f;
+    float lpL = 0.f, lpR = 0.f;
+
+    void reset() {
+        memset(bufL, 0, sizeof(bufL));
+        memset(bufR, 0, sizeof(bufR));
+        writePosL = writePosR = 0;
+        lpL = lpR = 0.f;
+    }
+
+    void setParams(float freq, float resNorm, float sr) {
+        delayLen = clamp((int)(sr / std::max(freq, 8.f)), 4, MAX_DELAY - 1);
+        feedback = resNorm * 0.97f;  // 0 = dry, approaches infinite sustain
+    }
+
+    void process(float& L, float& R) {
+        int rL = (writePosL - delayLen + MAX_DELAY) & (MAX_DELAY - 1);
+        lpL += 0.55f * (bufL[rL] - lpL);
+        float outL = L + lpL * feedback;
+        bufL[writePosL] = outL;
+        writePosL = (writePosL + 1) & (MAX_DELAY - 1);
+        L = outL;
+
+        int rR = (writePosR - delayLen + MAX_DELAY) & (MAX_DELAY - 1);
+        lpR += 0.55f * (bufR[rR] - lpR);
+        float outR = R + lpR * feedback;
+        bufR[writePosR] = outR;
+        writePosR = (writePosR + 1) & (MAX_DELAY - 1);
+        R = outR;
+    }
+};
+
+struct XsDubstepSVF {
+    float sampleRate = 48000.f;
+    float g = 0.f;
+    float k = 1.f;
+    float a1 = 1.f, a2 = 0.f, a3 = 0.f;
+    float s1[2]{0.f, 0.f};
+    float s2[2]{0.f, 0.f};
+    float envFollower = 0.f;
+    float attackCoef = 0.1f;
+    float releaseCoef = 0.001f;
+    float driveGain = 1.f;
+    float compensationGain = 1.f;
+    float subInjection = 0.f;
+    float mLP = 1.f, mBP = 0.f, mHP = 0.f;
+
+    void setSampleRate(float sr) {
+        sampleRate = std::max(1000.f, sr);
+        float atkTime = 0.0015f;
+        float relTime = 0.040f;
+        attackCoef = 1.0f - std::exp(-1.0f / (atkTime * sampleRate));
+        releaseCoef = 1.0f - std::exp(-1.0f / (relTime * sampleRate));
+    }
+
+    void reset() {
+        s1[0] = s1[1] = s2[0] = s2[1] = 0.f;
+        envFollower = 0.f;
+    }
+
+    void updateCoefficients(float cutoffNorm, float resNorm, float driveNorm, float morph, float envModAmt) {
+        cutoffNorm = clamp(cutoffNorm, 0.f, 1.f);
+        resNorm = clamp(resNorm, 0.f, 1.f);
+        driveNorm = clamp(driveNorm, 0.f, 1.f);
+        morph = clamp(morph, 0.f, 1.f);
+        envModAmt = clamp(envModAmt, 0.f, 1.f);
+
+        float dyn = cutoffNorm + envFollower * envModAmt * 0.4f;
+        dyn = clamp(dyn, 0.f, 0.92f);
+
+        float fMin = 20.f;
+        float fMax = sampleRate * 0.485f;
+        float f = fMin * std::exp(dyn * std::log(fMax / fMin));
+        float wd = 3.14159265f * f / sampleRate;
+        g = std::tan(wd);
+
+        float Q = 0.5f + (resNorm * resNorm * 24.5f);
+        k = 1.0f / Q;
+        a1 = 1.0f / (1.0f + g * (g + k));
+        a2 = g * a1;
+        a3 = g * a2;
+
+        if (!std::isfinite(g) || !std::isfinite(k) || !std::isfinite(a1) || !std::isfinite(a2) || !std::isfinite(a3)) {
+            g = 0.f;
+            k = 1.f;
+            a1 = 1.f;
+            a2 = 0.f;
+            a3 = 0.f;
+            mLP = 1.f;
+            mBP = 0.f;
+            mHP = 0.f;
+            driveGain = 1.f;
+            compensationGain = 1.f;
+            subInjection = 0.f;
+            return;
+        }
+
+        compensationGain = 1.0f + (resNorm * 0.35f);
+        float lowCutNorm = clamp(f / 800.0f, 0.f, 1.f);
+        float lowCutWeight = 1.0f - lowCutNorm;
+        subInjection = resNorm * lowCutWeight * 0.6f;
+
+        driveGain = 1.0f + (driveNorm * driveNorm * 4.5f);
+
+        if (morph < 0.5f) {
+            float t = morph * 2.0f;
+            mLP = 1.0f - t;
+            mBP = t;
+            mHP = 0.0f;
+        }
+        else {
+            float t = (morph - 0.5f) * 2.0f;
+            mLP = 0.0f;
+            mBP = 1.0f - t;
+            mHP = t;
+        }
+    }
+
+    inline void updateEnv(float monoIn) {
+        float a = std::fabs(monoIn);
+        if (a > envFollower)
+            envFollower += attackCoef * (a - envFollower);
+        else
+            envFollower += releaseCoef * (a - envFollower);
+    }
+
+    inline void processSample(int ch, float& sample) {
+        if (!std::isfinite(sample) || !std::isfinite(s1[ch]) || !std::isfinite(s2[ch]) ||
+            !std::isfinite(a1) || !std::isfinite(a2) || !std::isfinite(a3) ||
+            !std::isfinite(g) || !std::isfinite(k)) {
+            if (ch == 0)
+                reset();
+            sample = 0.f;
+            return;
+        }
+
+        float cleanInput = sample;
+        float driveAmt = (driveGain - 1.0f) / 4.5f;
+        if (driveAmt < 0.f)
+            driveAmt = 0.f;
+
+        float drivenIn = sample * driveGain;
+        float offset = driveAmt * 0.25f;
+        float driven = std::tanh(drivenIn + offset) - std::tanh(offset);
+        float drivenMix = driven * 0.90f + drivenIn * 0.10f;
+        float x = cleanInput + (drivenMix - cleanInput) * driveAmt;
+
+        float resFeedback = s2[ch] + (std::tanh(s2[ch]) - s2[ch]) * driveAmt;
+
+        float v3 = (x - s1[ch] * (g + k) - resFeedback) * a1;
+        float v1 = v3 * g + s1[ch];
+        float v2 = v1 * g + s2[ch];
+
+        s1[ch] = 2.0f * v1 - s1[ch];
+        s2[ch] = 2.0f * v2 - s2[ch];
+
+        float out = (mLP * v2) + (mBP * v1) + (mHP * v3);
+        out += (cleanInput * subInjection * mLP);
+        out *= compensationGain;
+
+        float outSat = std::tanh(out * 0.833f) * 1.2f;
+        out = out + (outSat - out) * driveAmt;
+
+        if (!std::isfinite(out)) {
+            if (ch == 0)
+                reset();
+            sample = 0.f;
+            return;
+        }
+
+        sample = out;
+    }
+};
+
 // ============================================================================
 // Module struct
 // ============================================================================
@@ -991,6 +1264,11 @@ struct Xenostasis : Module {
         WTVOL_PARAM,
         DRIVE_PARAM,
         FMVOL_PARAM,
+        FILTER_CUTOFF_PARAM,
+        FILTER_RESONANCE_PARAM,
+        FILTER_MODE_PARAM,
+        TEAR_PARAM,
+        FRAME_SCROLL_PARAM,
         PARAMS_LEN
     };
     enum InputId {
@@ -1002,6 +1280,10 @@ struct Xenostasis : Module {
         DENSITY_CV_INPUT,
         BBCHAR_CV_INPUT,
         BBMODE_CV_INPUT,
+        FILTER_CUTOFF_CV_INPUT,
+        FILTER_RESONANCE_CV_INPUT,
+        BBPITCH_CV_INPUT,
+        TEAR_CV_INPUT,
         INPUTS_LEN
     };
     enum OutputId {
@@ -1104,6 +1386,20 @@ struct Xenostasis : Module {
     // ── Sub oscillator ──
     float subPhase = 0.f;
 
+    // ── Mids/high FX branch (Phaseon1-inspired) ──
+    XsDubstepSVF phaseFilter;
+    XsLadderFilter ladder;
+    XsCombFilter   comb;
+    float splitLpL = 0.f;
+    float splitLpR = 0.f;
+    static constexpr int TEAR_DELAY_SIZE = 256;
+    float tearDelayL[TEAR_DELAY_SIZE] = {};
+    float tearDelayR[TEAR_DELAY_SIZE] = {};
+    int tearDelayWrite = 0;
+    uint32_t tearNoiseState = 0x6D2B79F5u;
+    float tearWet = 0.f;
+    int filterUpdateCounter = 0;
+
     // ── Sample rate ──
     float sampleRate = 48000.f;
 
@@ -1195,12 +1491,25 @@ struct Xenostasis : Module {
 
         configParam(PITCH_PARAM, -4.f, 4.f, 0.f, "Pitch", " V");
         configParam(CHAOS_PARAM, 0.f, 1.f, 0.f, "Chaos", "%", 0.f, 100.f);
+        getParamQuantity(CHAOS_PARAM)->description = "Injects spectral instability: scrambles osc ratios, frame destinations & bytebeat rules. Low = ordered drone, high = disintegrating noise.";
         configParam(STABILITY_PARAM, 0.f, 1.f, 0.6f, "Stability", "%", 0.f, 100.f);
+        getParamQuantity(STABILITY_PARAM)->description = "Governs how tightly the drone holds its pitch & spectral centre. Low = drifting, evolving; high = locked, stable.";
         configParam(HOMEOSTASIS_PARAM, 0.f, 1.f, 0.5f, "Homeostasis", "%", 0.f, 100.f);
+        getParamQuantity(HOMEOSTASIS_PARAM)->description = "Self-correcting feedback: when the system drifts, pulls it back toward equilibrium. High = resists chaos; low = organism mutates freely.";
         configParam(CROSS_PARAM, 0.f, 1.f, 0.15f, "Cross Modulation", "%", 0.f, 100.f);
+        getParamQuantity(CROSS_PARAM)->description = "Cross-modulates WT osc & bytebeat engine against each other. Adds gritty FM sidebands and spectral entanglement between the two layers.";
         configParam(DENSITY_PARAM, 0.f, 1.f, 0.2f, "Density", "%", 0.f, 100.f);
-        configParam(TABLE_PARAM, 0.f, 7.f, 0.f, "Table Select");
-        getParamQuantity(TABLE_PARAM)->snapEnabled = true;
+        getParamQuantity(DENSITY_PARAM)->description = "Harmonic & bytebeat event density. Low = sparse, airy; high = thick, saturated spectral mass.";
+        configSwitch(TABLE_PARAM, 0.f, 7.f, 0.f, "Table Select", {
+            "0: Feral Machine",
+            "1: Hollow Resonant",
+            "2: Abyssal Alloy",
+            "3: Substrate",
+            "4: Submerged Monolith",
+            "5: Harsh Noise",
+            "6: Arcade FX",
+            "7: Alien Physics Collapse",
+        });
         configParam(BBCHAR_PARAM, 0.f, 1.f, 0.5f, "Bytebeat Character", "%", 0.f, 100.f);
         configParam(BBVOL_PARAM, 0.f, 2.f, 1.f, "Bytebeat Volume", "%", 0.f, 100.f);
 		configSwitch(BBMODE_PARAM, 0.f, 7.f, 0.f, "Bytebeat Mode", {
@@ -1214,11 +1523,19 @@ struct Xenostasis : Module {
 			"Organism",
 		});
         configParam(BBPITCH_PARAM, -2.f, 2.f, 0.f, "Bytebeat Pitch", " oct");
-        configParam(DECAY_PARAM, 0.f, 1.f, 0.3f, "Decay", "%", 0.f, 100.f);
+        configParam(DECAY_PARAM, 0.f, 1.f, 0.5f, "Env/Width", "%", 0.f, 100.f);
+        getParamQuantity(DECAY_PARAM)->description = "Dual: envelope decay (short = tight drum stabs) & stereo width (high = wider, more enveloping spread).";
         configParam(PUNCH_PARAM, 0.f, 1.f, 0.5f, "Punch", "%", 0.f, 100.f);
+        getParamQuantity(PUNCH_PARAM)->description = "Drum/trigger transient intensity. Boosts the attack snap on trigger events — higher = harder, more percussive hit.";
         configParam(WTVOL_PARAM, 0.f, 1.f, 0.7f, "Wavetable Volume", "%", 0.f, 100.f);
         configParam(DRIVE_PARAM, 0.f, 1.f, 0.3f, "Drive", "%", 0.f, 100.f);
         configParam(FMVOL_PARAM, 0.f, 1.f, 0.5f, "FM Volume", "%", 0.f, 100.f);
+        configParam(FILTER_CUTOFF_PARAM, 0.f, 1.f, 1.f, "Filter Cutoff", "%", 0.f, 100.f);
+        configParam(FILTER_RESONANCE_PARAM, 0.f, 1.f, 0.f, "Filter Resonance", "%", 0.f, 100.f);
+        configSwitch(FILTER_MODE_PARAM, 0.f, 2.f, 0.f, "Filter Mode", {"Off", "Ladder", "Comb"});
+        configParam(TEAR_PARAM, 0.f, 1.f, 0.f, "Tear", "%", 0.f, 100.f);
+        getParamQuantity(TEAR_PARAM)->description = "Glitch layer: pitch-warps and fragment-loops the output, creating digital tearing, stutter & granular shredding.";
+        configParam(FRAME_SCROLL_PARAM, 0.f, 1.f, 0.5f, "Frame Scroll", "%", 0.f, 100.f);
 
         configInput(CLOCK_INPUT, "Trigger");
         configInput(CHAOS_CV_INPUT, "Chaos CV (0-10V)");
@@ -1228,6 +1545,10 @@ struct Xenostasis : Module {
         configInput(DENSITY_CV_INPUT, "Density CV (0-10V)");
         configInput(BBCHAR_CV_INPUT, "Bytebeat Character CV (0-10V)");
         configInput(BBMODE_CV_INPUT, "Bytebeat Mode CV (0-10V)");
+        configInput(FILTER_CUTOFF_CV_INPUT, "Filter Cutoff CV (0-10V)");
+        configInput(FILTER_RESONANCE_CV_INPUT, "Filter Resonance CV (0-10V)");
+        configInput(BBPITCH_CV_INPUT, "Bytebeat Tune CV (0-10V)");
+        configInput(TEAR_CV_INPUT, "Tear CV (0-10V)");
 
         configOutput(LEFT_OUTPUT, "Left Audio");
         configOutput(RIGHT_OUTPUT, "Right Audio");
@@ -1252,6 +1573,12 @@ struct Xenostasis : Module {
         epsilonWalk.value = 0.0003f;
         biasWalk.seed(11111);
         biasWalk.value = 0.02f;
+
+        phaseFilter.setSampleRate(sampleRate);
+        phaseFilter.reset();
+        ladder.setSampleRate(sampleRate);
+        ladder.reset();
+        comb.reset();
     }
 
     ~Xenostasis() {
@@ -1266,6 +1593,10 @@ struct Xenostasis : Module {
         float dt = 1.f / sampleRate;
         smoothCoeff20Hz = 1.f - ::expf(-2.f * (float)M_PI * 20.f * dt);
         bbMaxStep = 0.002f * (sampleRate / 48000.f);
+        phaseFilter.setSampleRate(sampleRate);
+        ladder.setSampleRate(sampleRate);
+        ladder.reset();
+        comb.reset();
     }
 
     // ── Wavetable read (smooth interp for most, hard switch for harsh/FX) ──
@@ -1315,19 +1646,37 @@ struct Xenostasis : Module {
         float fFrac = hardSwitch ? 0.f : (frame - (float)f0);  // 0 = no interp
 
         // Wrap phase to 0..1
+    #ifdef METAMODULE
+        phase = phase - ::floorf(phase);
+    #else
         phase = phase - std::floor(phase);
+    #endif
         float samplePos = phase * (float)XS_FRAME_SIZE;
         int s0 = (int)samplePos & (XS_FRAME_SIZE - 1);
         int s1 = (s0 + 1) & (XS_FRAME_SIZE - 1);
-        float sFrac = samplePos - std::floor(samplePos);
+        float sFrac = samplePos - (float)((int)samplePos);
 
         // Bilinear: interpolate within each frame, then between frames
-        float v0 = bank->data[tableIdx][f0][s0] * (1.f - sFrac)
-                  + bank->data[tableIdx][f0][s1] * sFrac;
-        float v1 = bank->data[tableIdx][f1][s0] * (1.f - sFrac)
-                  + bank->data[tableIdx][f1][s1] * sFrac;
+        const float* frame0 = bank->data[tableIdx][f0];
+        const float* frame1 = bank->data[tableIdx][f1];
+        float invS = 1.f - sFrac;
+        float invF = 1.f - fFrac;
 
-        return v0 * (1.f - fFrac) + v1 * fFrac;
+        // Fast paths: common on hard-switched tables (fFrac == 0).
+        if (fFrac <= 0.f) {
+            if (sFrac <= 0.f)
+                return frame0[s0];
+            return frame0[s0] * invS + frame0[s1] * sFrac;
+        }
+
+        if (sFrac <= 0.f) {
+            return frame0[s0] * invF + frame1[s0] * fFrac;
+        }
+
+        float v0 = frame0[s0] * invS + frame0[s1] * sFrac;
+        float v1 = frame1[s0] * invS + frame1[s1] * sFrac;
+
+        return v0 * invF + v1 * fFrac;
     }
 
     // ── Soft clipper ──
@@ -1414,6 +1763,22 @@ struct Xenostasis : Module {
         float driveKnob = params[DRIVE_PARAM].getValue();
         // FM volume: 0 = silent, 1 = full
         float fmVol = params[FMVOL_PARAM].getValue();
+        float filterCutoff = params[FILTER_CUTOFF_PARAM].getValue();
+        if (inputs[FILTER_CUTOFF_CV_INPUT].isConnected()) {
+            float filterCv = clamp(inputs[FILTER_CUTOFF_CV_INPUT].getVoltage() / 10.f, 0.f, 1.f);
+            filterCutoff = clamp(filterCutoff + filterCv, 0.f, 1.f);
+        }
+        float filterRes = params[FILTER_RESONANCE_PARAM].getValue();
+        if (inputs[FILTER_RESONANCE_CV_INPUT].isConnected()) {
+            float filterResCv = clamp(inputs[FILTER_RESONANCE_CV_INPUT].getVoltage() / 10.f, 0.f, 1.f);
+            filterRes = clamp(filterRes + filterResCv, 0.f, 1.f);
+        }
+        float tearTarget = params[TEAR_PARAM].getValue();
+        if (inputs[TEAR_CV_INPUT].isConnected()) {
+            float tearCv = clamp(inputs[TEAR_CV_INPUT].getVoltage() / 10.f, 0.f, 1.f);
+            tearTarget = clamp(tearTarget + tearCv, 0.f, 1.f);
+        }
+        float frameScroll = params[FRAME_SCROLL_PARAM].getValue();
 
         // Smooth params to prevent zipper noise
         float smoothCoeff = smoothCoeff20Hz;  // ~20Hz smoothing
@@ -1541,11 +1906,11 @@ struct Xenostasis : Module {
             float driftLo = clamp(driftCenter - driftRange * 0.5f, 0.f, (float)(XS_FRAMES - 1));
             float driftHi = clamp(driftCenter + driftRange * 0.5f, 0.f, (float)(XS_FRAMES - 1));
 
-            // Random acceleration force
-            float accel = frameDriftWalk.nextRandom() * driftRate * 0.01f;
+            // Random acceleration force -- zeroed at stability=1
+            float accel = frameDriftWalk.nextRandom() * driftRate * 0.01f * (1.f - stability);
             frameVelocity += accel;
-            // Damping -- prevents runaway
-            frameVelocity *= 0.998f;
+            // Damping -- stronger at high stability so velocity decays fully to zero
+            frameVelocity *= (0.998f - stability * 0.996f);  // 0.998 at 0, ~0.002 at 1 → decays fast
             frameDrift += frameVelocity;
 
             // Damped reflection at boundaries (not hard negate)
@@ -1585,6 +1950,11 @@ struct Xenostasis : Module {
             // ── Control-rate: bytebeat pitch multiplier (avoids per-sample exp2) ──
             {
                 float bbPitchVal = params[BBPITCH_PARAM].getValue();
+                if (inputs[BBPITCH_CV_INPUT].isConnected()) {
+                    float bbPitchCv = clamp(inputs[BBPITCH_CV_INPUT].getVoltage() / 10.f, 0.f, 1.f);
+                    bbPitchVal += (bbPitchCv * 4.f - 2.f);
+                    bbPitchVal = clamp(bbPitchVal, -2.f, 2.f);
+                }
             #ifdef METAMODULE
                 cachedBbPitchMult = xsExp2Fast(bbPitchVal);
             #else
@@ -1613,23 +1983,34 @@ struct Xenostasis : Module {
                 cachedLfo3 = std::sin((float)droneFmLfo3 * 2.f * (float)M_PI);
             #endif
 
-            cachedDroneRatio = 2.f + cachedLfo1 * (1.5f + smoothedChaos * 2.f)
-                              + cachedLfo2 * 0.7f;
+            cachedDroneRatio = 2.f + cachedLfo1 * (1.5f + smoothedChaos * 2.f) * (1.f - stability)
+                              + cachedLfo2 * 0.7f * (1.f - stability);
             cachedDroneRatio = std::fabs(cachedDroneRatio);
             if (cachedDroneRatio < 0.25f) cachedDroneRatio = 0.25f;
 
             cachedDroneIndex = 0.5f + smoothedChaos * 4.f
-                             + cachedLfo2 * (1.f + smoothedChaos * 2.f)
-                             + cachedPulse * 0.5f
+                             + cachedLfo2 * (1.f + smoothedChaos * 2.f) * (1.f - stability)
+                             + cachedPulse * 0.5f * (1.f - stability)
                              + energy * 2.f;
             cachedDroneIndex = std::fabs(cachedDroneIndex);
 
-            cachedMod2Ratio = 0.5f + cachedLfo3 * 0.3f + smoothedChaos * 0.5f;
-            cachedMod2Index = smoothedChaos * 2.f + energy * 1.f + cachedLfo1 * 0.5f;
+            cachedMod2Ratio = 0.5f + cachedLfo3 * 0.3f * (1.f - stability) + smoothedChaos * 0.5f;
+            cachedMod2Index = smoothedChaos * 2.f + energy * 1.f + cachedLfo1 * 0.5f * (1.f - stability);
             cachedMod2Index = std::fabs(cachedMod2Index);
 
             cachedSatAmount = 1.f + smoothedChaos * 2.f - stability * 0.5f;
         }
+
+    #ifdef METAMODULE
+        // In clocked drum mode, when the strike envelope is fully closed and there
+        // is no incoming trigger this sample, output is guaranteed silent.
+        // Fast-exit here to skip the heaviest per-sample synthesis work.
+        if (percussiveMode && !clockJustFired && strikeEnv <= 0.0005f) {
+            outputs[LEFT_OUTPUT].setVoltage(0.f);
+            outputs[RIGHT_OUTPUT].setVoltage(0.f);
+            return;
+        }
+    #endif
 
         // ── 3. Organism pulse (cached at control rate) ──
         float pulse = cachedPulse;
@@ -1827,15 +2208,10 @@ struct Xenostasis : Module {
         float bb2 = (float)raw2 / 128.f - 1.f;
         float bb3 = (float)raw3 / 128.f - 1.f;
 
-        // Density controls how raw vs smooth the bytebeat is
-        // Low density: heavily smoothed (warm drone). High density: raw texture.
-        float bbSmoothCoeff = 0.01f + smoothedDensity * 0.4f;
-        bbSmoothCoeff = clamp(bbSmoothCoeff, 0.01f, 0.45f);
-        // Stability further tames the bytebeat -- high stability = smoother
-        bbSmoothCoeff *= (0.4f + (1.f - stability) * 0.6f);
-        // Let bytebeat breathe more when provoked -- reduce smoothing in high energy
-        if (energy > 0.7f)
-            bbSmoothCoeff *= (1.f - (energy - 0.7f) * 0.5f);
+        // Light anti-alias smoothing only -- SVF in output stage handles tonal shaping.
+        // Coefficient floor raised so smoothing doesn't crush amplitude.
+        float bbSmoothCoeff = 0.15f + smoothedDensity * 0.35f;
+        bbSmoothCoeff = clamp(bbSmoothCoeff, 0.15f, 0.5f);
 
         bbSmoothed += (bb1 - bbSmoothed) * bbSmoothCoeff;
         bbLayer2 += (bb2 - bbLayer2) * (bbSmoothCoeff * 0.7f);
@@ -1846,12 +2222,9 @@ struct Xenostasis : Module {
                       + bbLayer2 * 0.3f
                       + bbLayer3 * 0.2f * (0.3f + energy * 0.7f);  // L3 opens up with energy
 
-        // Bandpass-ish filter tracked to fundamental -- keeps bytebeat tonal
-        float bpCoeff = clamp(bbFreq / sampleRate * 6.2832f * 4.f, 0.001f, 0.5f);
-        bbFilterState += (bbMixed - bbFilterState) * bpCoeff;
-        float bbTonal = bbMixed - bbFilterState;  // highpass removes DC rumble
-        // Blend filtered vs raw based on stability (high stability = more tonal filtering)
-        float bbFinal = bbMixed * (1.f - stability * 0.5f) + bbTonal * stability * 0.5f;
+        // DC block only (remove old redundant tonal filter -- SVF handles this)
+        bbFilterState += (bbMixed - bbFilterState) * 0.003f;  // very slow LP for DC only
+        float bbFinal = bbMixed - bbFilterState;              // subtract DC offset
 
         // ── 5. Slew-limit bytebeat for modulation (crackle-free control signal) ──
         // bbFinal stays raw for audio mix. bbSlewed is used for all modulation paths.
@@ -1880,8 +2253,8 @@ struct Xenostasis : Module {
         // WT → BB: density + shift depth + time bias (precomputed for next iteration)
         // This is applied via the smoothedDensity and bbEpsilon update paths above
 
-        // Phase warp depth modulated by cross
-        phaseWarpDepth = bbToWtWarp * (0.5f + energy * 0.5f);
+        // Phase warp depth modulated by cross -- zeroed at stability=1
+        phaseWarpDepth = bbToWtWarp * (0.5f + energy * 0.5f) * (1.f - stability);
 
         // Strike excites frame velocity -- scaled by punch
         if (strikeEnv > 0.01f) {
@@ -1894,11 +2267,12 @@ struct Xenostasis : Module {
         // Strike jumps frame position (randomized, scaled by punch)
         float strikeFrameOffset = strikeEnv * strikeFrameJump * (0.3f + punchKnob * 0.7f);
 
-        // Organism pulse leans frame velocity
-        frameVelocity += pulse * 0.0002f;
+        // Organism pulse leans frame velocity -- zeroed at stability=1
+        frameVelocity += pulse * 0.0002f * (1.f - stability);
 
         // Frame position: base drift + nonlinear bloom + strike jump
         float framePos = frameDrift + nonlinearExpand + strikeFrameOffset;
+        framePos += (frameScroll - 0.5f) * ((float)XS_FRAMES - 1.f) * 0.8f;
         framePos = clamp(framePos, 0.f, (float)(XS_FRAMES - 1));
 
         // ── 7. Compute wavetable sample ──
@@ -1909,35 +2283,45 @@ struct Xenostasis : Module {
         if (wtPhaseL >= 1.f) wtPhaseL -= 1.f;
         // Strike adds randomized extra phase warp per hit
         float totalWarpL = phaseWarpDepth + strikeEnv * strikeWarpAmount;
-        float warpedPhaseL = wtPhaseL + totalWarpL *
-    #ifdef METAMODULE
+        float warpedPhaseL = wtPhaseL;
+        if (std::fabs(totalWarpL) > 1e-6f) {
+            warpedPhaseL += totalWarpL *
+        #ifdef METAMODULE
             xsSin2Pi(wtPhaseL)
-    #else
+        #else
             std::sin(wtPhaseL * 2.f * M_PI)
-    #endif
+        #endif
             ;
+        }
         float wtSampleL = readWavetable(tableIdx, framePos, warpedPhaseL);
 
         // Right channel (storm-divergent stereo)
         wtPhaseR += phaseInc;
         if (wtPhaseR >= 1.f) wtPhaseR -= 1.f;
         float stereoOffset = 0.003f + energy * 0.01f;
-        // Storm stereo: spatial instability from BB + organism decorrelation
-        float stereoChaos = energy * 0.025f *
-    #ifdef METAMODULE
+        // Storm stereo: spatial instability from BB + organism decorrelation -- zeroed at stability=1
+        float stereoChaos = 0.f;
+        float stereoChaosAmt = energy * 0.025f * (1.f - stability);
+        if (stereoChaosAmt > 1e-6f) {
+            stereoChaos = stereoChaosAmt *
+        #ifdef METAMODULE
             xsSinRad(bbSlewed * 3.f + (float)organismPhase * 0.3f)
-    #else
+        #else
             std::sin(bbSlewed * 3.f + (float)organismPhase * 0.3f)
-    #endif
+        #endif
             ;
+        }
         float totalWarpR = phaseWarpDepth + strikeEnv * strikeWarpAmount * 0.8f;  // slightly different per channel
-        float warpedPhaseR = wtPhaseR + stereoOffset + stereoChaos + totalWarpR *
-    #ifdef METAMODULE
+        float warpedPhaseR = wtPhaseR + stereoOffset + stereoChaos;
+        if (std::fabs(totalWarpR) > 1e-6f) {
+            warpedPhaseR += totalWarpR *
+        #ifdef METAMODULE
             xsSin2Pi(wtPhaseR)
-    #else
+        #else
             std::sin(wtPhaseR * 2.f * M_PI)
-    #endif
+        #endif
             ;
+        }
         float wtSampleR = readWavetable(tableIdx, framePos, warpedPhaseR);
 
         // ── 8. Energy-driven spectral tilt (harmonic falloff without table rebuild) ──
@@ -1987,14 +2371,17 @@ struct Xenostasis : Module {
         // ── 9. Sub stabilizer (under high chaos/energy) ──
         subPhase += freq * dt;
         if (subPhase >= 1.f) subPhase -= 1.f;
-        float subSine =
-    #ifdef METAMODULE
-            xsSin2Pi(subPhase)
-    #else
-            std::sin(subPhase * 2.f * M_PI)
-    #endif
-            ;
         float subLevel = energy * smoothedChaos * 0.2f;  // only active under chaos + energy
+        float subSine = 0.f;
+        if (subLevel > 1e-6f) {
+            subSine =
+        #ifdef METAMODULE
+            xsSin2Pi(subPhase)
+        #else
+            std::sin(subPhase * 2.f * M_PI)
+        #endif
+            ;
+        }
 
         // -- 9b. FM synthesis --
         float fmSample = 0.f;
@@ -2138,13 +2525,123 @@ struct Xenostasis : Module {
 
         float mixL = wtSampleL * wtWeight + bbL * bbWeight + subSine * subLevel + metallicL + fmSample * fmVol * 0.8f;
         float mixR = wtSampleR * wtWeight + bbR * bbWeight + subSine * subLevel + metallicR + fmSampleR * fmVol * 0.8f;
+        bool gateOpen = (!percussiveMode) || (strikeEnv > 0.0005f);
 
         // ── 11. Percussive amplitude shaping (clock mode only) ──
         // True VCA gate: silent between hits, envelope opens on strike
         if (percussiveMode) {
-            mixL *= strikeEnv;
-            mixR *= strikeEnv;
+            if (gateOpen) {
+                mixL *= strikeEnv;
+                mixR *= strikeEnv;
+            }
+            else {
+                mixL = 0.f;
+                mixR = 0.f;
+            }
         }
+
+        // ── 11a. Full-signal filter (mode-switched: off / ladder / comb) ──
+        int filterMode = (int)params[FILTER_MODE_PARAM].getValue();
+        bool ladderNearBypass = (filterMode == 1 && filterCutoff > 0.995f && filterRes < 0.002f);
+        if (filterMode == 1 && !ladderNearBypass) {
+            ladder.process(mixL, mixR);
+        } else if (filterMode == 2) {
+            comb.process(mixL, mixR);
+        }
+
+        // ── 11b. Phaseon1-style mids/high filter + TEAR branch ──
+        float cleanSubL = splitLpL;
+        float cleanSubR = splitLpR;
+        splitLpL += 0.013f * (mixL - splitLpL);
+        splitLpR += 0.013f * (mixR - splitLpR);
+        cleanSubL = splitLpL;
+        cleanSubR = splitLpR;
+        float midHighL = mixL - cleanSubL;
+        float midHighR = mixR - cleanSubR;
+
+        if (--filterUpdateCounter <= 0) {
+            filterUpdateCounter = 8;
+            if (filterMode == 0) {
+                // OFF: ensure SVF state is clear so toggling back on has no stale DC
+                // (no coefficient update needed -- filter is fully bypassed)
+            } else if (filterMode == 1 && !ladderNearBypass) {
+                ladder.setParams(filterCutoff, filterRes);
+            } else if (filterMode == 2) {
+                comb.setParams(freq, filterRes, sampleRate);
+            }
+        }
+
+        float tearWet0 = tearWet;
+        float tearWet1 = tearWet0 + (tearTarget - tearWet0) * 0.12f;
+        tearWet = tearWet1;
+        if (tearWet1 > 0.0005f && gateOpen) {
+            float combHz = freq * (8.0f + 28.0f * tearWet1);
+            if (combHz < 40.f)
+                combHz = 40.f;
+            int tearDelayLen = (int)(sampleRate / combHz);
+            if (tearDelayLen < 8)
+                tearDelayLen = 8;
+            if (tearDelayLen > TEAR_DELAY_SIZE - 1)
+                tearDelayLen = TEAR_DELAY_SIZE - 1;
+
+            float drive = 1.0f + 7.0f * tearWet1;
+            float foldedL =
+#ifdef METAMODULE
+                xsSinRad(midHighL * drive)
+#else
+                std::sin(midHighL * drive)
+#endif
+                ;
+            float foldedR =
+#ifdef METAMODULE
+                xsSinRad(midHighR * drive)
+#else
+                std::sin(midHighR * drive)
+#endif
+                ;
+
+            tearNoiseState ^= tearNoiseState << 13;
+            tearNoiseState ^= tearNoiseState >> 17;
+            tearNoiseState ^= tearNoiseState << 5;
+            float nL = (float)((tearNoiseState >> 8) & 0x00FFFFFFu) * (1.0f / 16777215.0f) * 2.f - 1.f;
+            tearNoiseState ^= tearNoiseState << 13;
+            tearNoiseState ^= tearNoiseState >> 17;
+            tearNoiseState ^= tearNoiseState << 5;
+            float nR = (float)((tearNoiseState >> 8) & 0x00FFFFFFu) * (1.0f / 16777215.0f) * 2.f - 1.f;
+
+            float noiseAmt = 0.01f + 0.06f * tearWet1;
+            float preL = foldedL + nL * noiseAmt;
+            float preR = foldedR + nR * noiseAmt;
+
+            int read = (tearDelayWrite - tearDelayLen) & (TEAR_DELAY_SIZE - 1);
+            float dL = tearDelayL[read];
+            float dR = tearDelayR[read];
+            float fb = 0.12f + 0.72f * tearWet1;
+            float combMix = 0.18f + 0.55f * tearWet1;
+            tearDelayL[tearDelayWrite] = preL + dL * fb;
+            tearDelayR[tearDelayWrite] = preR + dR * fb;
+            tearDelayWrite = (tearDelayWrite + 1) & (TEAR_DELAY_SIZE - 1);
+
+            float wetL =
+#ifdef METAMODULE
+                xsTanhFast((preL + dL * combMix) * (1.0f + 1.4f * tearWet1))
+#else
+                std::tanh((preL + dL * combMix) * (1.0f + 1.4f * tearWet1))
+#endif
+                ;
+            float wetR =
+#ifdef METAMODULE
+                xsTanhFast((preR + dR * combMix) * (1.0f + 1.4f * tearWet1))
+#else
+                std::tanh((preR + dR * combMix) * (1.0f + 1.4f * tearWet1))
+#endif
+                ;
+            midHighL = midHighL + (wetL - midHighL) * tearWet1;
+            midHighR = midHighR + (wetR - midHighR) * tearWet1;
+        }
+
+        mixL = cleanSubL + midHighL;
+        mixR = cleanSubR + midHighR;
 
         // ── 11. Soft-clip, drive and output ──
         // Drive: soft-knee compressor + parallel tanh saturation
@@ -2202,8 +2699,23 @@ struct Xenostasis : Module {
             outL = softClip(outL);
             outR = softClip(outR);
         }
+        if (percussiveMode && !gateOpen) {
+            outL = 0.f;
+            outR = 0.f;
+        }
         outL *= 5.f;
         outR *= 5.f;
+
+        // ── Stereo Width (drone mode only) ──
+        // In drone mode the ENV/WIDTH knob (DECAY_PARAM) controls stereo width.
+        // widthFactor: 0 = mono, 1.0 = unchanged (knob at 0.5), 2.0 = double-wide (knob at max).
+        if (!percussiveMode) {
+            float widthFactor = decayKnob * 2.f;
+            float mid  = (outL + outR) * 0.5f;
+            float side = (outL - outR) * 0.5f;
+            outL = mid + side * widthFactor;
+            outR = mid - side * widthFactor;
+        }
 
         outputs[LEFT_OUTPUT].setVoltage(outL);
         outputs[RIGHT_OUTPUT].setVoltage(outR);
@@ -2267,8 +2779,14 @@ static XsPanelLabel* xsCreateLabelPxYOffset(Vec mmPos, float yOffsetPx, const ch
 
 #ifndef METAMODULE
 using XenostasisKnob = MVXKnob;
+struct XenostasisOutPort : MVXPort {
+    XenostasisOutPort() {
+        imagePath = asset::plugin(pluginInstance, "res/ports/MVXport_red.png");
+    }
+};
 #else
 using XenostasisKnob = RoundSmallBlackKnob;
+using XenostasisOutPort = MVXPort;
 #endif
 
 struct XenostasisWidget : ModuleWidget {
@@ -2294,8 +2812,9 @@ struct XenostasisWidget : ModuleWidget {
 
         // ── Panel layout constants (mm) ──
         // 16HP = 81.28mm wide
-        float xL = 10.f;
-        float xR = 71.28f;
+        // Tighten spacing by ~10px between neighboring columns while keeping rows evenly spaced.
+        float xL = 15.3f;
+        float xR = 66.0f;
         float xStep = (xR - xL) / 4.f;
         float x1 = xL;
         float x2 = xL + xStep;
@@ -2304,7 +2823,7 @@ struct XenostasisWidget : ModuleWidget {
         float x5 = xR;
 
         // Global UI shifts (pixels): move everything down by 14px.
-        float knobsYOffsetPx = 38.f;
+        float knobsYOffsetPx = 26.f;  // moved knobs up 5px
         #ifndef METAMODULE
             knobsYOffsetPx += 3.f;
         #endif
@@ -2327,12 +2846,13 @@ struct XenostasisWidget : ModuleWidget {
         // ──────────────────────────────
         // Row 2: Core (even spacing, same knob size)
         // ──────────────────────────────
+        // Each subsequent knob row is pulled 8px closer (cumulative) plus global +7px upward shift.
         float row2Y = 25.f;
     #ifndef METAMODULE
         addChild(xsCreateLabelPxYOffset(Vec(x1, row2Y - 7.f), knobsYOffsetPx, "PITCH", 7.5f, uiText));
-        addChild(xsCreateLabelPxYOffset(Vec(x2, row2Y - 7.f), knobsYOffsetPx, "TABLE", 7.5f, uiText));
+        addChild(xsCreateLabelPxYOffset(Vec(x2, row2Y - 7.f), knobsYOffsetPx, "WT TABLE", 7.5f, uiText));
         addChild(xsCreateLabelPxYOffset(Vec(x3, row2Y - 7.f), knobsYOffsetPx, "CHAOS", 7.5f, uiText));
-        addChild(xsCreateLabelPxYOffset(Vec(x4, row2Y - 7.f), knobsYOffsetPx, "STAB", 7.5f, uiText));
+        addChild(xsCreateLabelPxYOffset(Vec(x4, row2Y - 7.f), knobsYOffsetPx, "STABILITY", 7.5f, uiText));
         addChild(xsCreateLabelPxYOffset(Vec(x5, row2Y - 7.f), knobsYOffsetPx, "HOMEO", 7.5f, uiText));
     #endif
         addParam(createParamCentered<XenostasisKnob>(toKnobPx(Vec(x1, row2Y)), module, Xenostasis::PITCH_PARAM));
@@ -2344,15 +2864,15 @@ struct XenostasisWidget : ModuleWidget {
         // ──────────────────────────────
         // Row 3: Hit + modulation
         // ──────────────────────────────
-        float row3Y = 42.f;
+        float row3Y = 39.9f - (3.f / 5.08f);
 #ifndef METAMODULE
-    addChild(xsCreateLabelPxYOffset(Vec(x1, row3Y - 7.f), knobsYOffsetPx, "DECAY", 7.5f, uiText));
+    addChild(xsCreateLabelPxYOffset(Vec(x1, row3Y - 7.f), knobsYOffsetPx, "TEAR", 7.5f, uiText));
     addChild(xsCreateLabelPxYOffset(Vec(x2, row3Y - 7.f), knobsYOffsetPx, "PUNCH", 7.5f, uiText));
-    addChild(xsCreateLabelPxYOffset(Vec(x3, row3Y - 7.f), knobsYOffsetPx, "CROSS", 7.5f, uiText));
+    addChild(xsCreateLabelPxYOffset(Vec(x3, row3Y - 7.f), knobsYOffsetPx, "CROSS MOD", 7.5f, uiText));
     addChild(xsCreateLabelPxYOffset(Vec(x4, row3Y - 7.f), knobsYOffsetPx, "DENS", 7.5f, uiText));
-    addChild(xsCreateLabelPxYOffset(Vec(x5, row3Y - 7.f), knobsYOffsetPx, "BB", 7.5f, uiText));
+    addChild(xsCreateLabelPxYOffset(Vec(x5, row3Y - 7.f), knobsYOffsetPx, "BB CHAR", 7.5f, uiText));
 #endif
-    addParam(createParamCentered<XenostasisKnob>(toKnobPx(Vec(x1, row3Y)), module, Xenostasis::DECAY_PARAM));
+    addParam(createParamCentered<XenostasisKnob>(toKnobPx(Vec(x1, row3Y)), module, Xenostasis::TEAR_PARAM));
     addParam(createParamCentered<XenostasisKnob>(toKnobPx(Vec(x2, row3Y)), module, Xenostasis::PUNCH_PARAM));
     addParam(createParamCentered<XenostasisKnob>(toKnobPx(Vec(x3, row3Y)), module, Xenostasis::CROSS_PARAM));
     addParam(createParamCentered<XenostasisKnob>(toKnobPx(Vec(x4, row3Y)), module, Xenostasis::DENSITY_PARAM));
@@ -2361,22 +2881,24 @@ struct XenostasisWidget : ModuleWidget {
         // ──────────────────────────────
         // Row 4: Mix (volumes + drive grouped)
         // ──────────────────────────────
-        float row4Y = 59.f;
+        float row4Y = 54.8f - (6.f / 5.08f);
         float lightX = 76.f;
         float lightRowY = row4Y + 17.f;
 #ifndef METAMODULE
-    addChild(xsCreateLabelPxYOffset(Vec(x2, row4Y - 7.f), knobsYOffsetPx, "WT", 7.5f, uiText));
-    addChild(xsCreateLabelPxYOffset(Vec(x3, row4Y - 7.f), knobsYOffsetPx, "FM", 7.5f, uiText));
+    addChild(xsCreateLabelPxYOffset(Vec(x2, row4Y - 7.f), knobsYOffsetPx, "WT VOL", 7.5f, uiText));
+    addChild(xsCreateLabelPxYOffset(Vec(x3, row4Y - 7.f), knobsYOffsetPx, "FM VOL", 7.5f, uiText));
     addChild(xsCreateLabelPxYOffset(Vec(x4, row4Y - 7.f), knobsYOffsetPx, "DRIVE", 7.5f, uiText));
     addChild(xsCreateLabelPxYOffset(Vec(x1, row4Y - 7.f), knobsYOffsetPx, "BB VOL", 7.5f, uiText));
-	addChild(xsCreateLabelPxYOffset(Vec(x5, row4Y - 7.f), knobsYOffsetPx, "MODE", 7.5f, uiText));
+	addChild(xsCreateLabelPxYOffset(Vec(x5, row4Y - 7.f), knobsYOffsetPx, "BB MODE", 7.5f, uiText));
     {
 		auto* energyLabel = xsCreateLabelPxYOffset(Vec(lightX, lightRowY - 4.f), knobsYOffsetPx - 12.f, "ENERGY", 5.5f, uiText);
-        energyLabel->box.pos.x -= 15.f;
+        energyLabel->box.pos.x -= 3.f;
+        energyLabel->box.pos.y += 2.f;
         addChild(energyLabel);
 
 		auto* stormLabel = xsCreateLabelPxYOffset(Vec(lightX, lightRowY + 4.f), knobsYOffsetPx - 12.f, "STORM", 5.5f, uiText);
-        stormLabel->box.pos.x -= 15.f;
+        stormLabel->box.pos.x -= 3.f;
+        stormLabel->box.pos.y += 2.f;
         addChild(stormLabel);
     }
 #endif
@@ -2386,94 +2908,106 @@ struct XenostasisWidget : ModuleWidget {
     addParam(createParamCentered<XenostasisKnob>(toKnobPx(Vec(x1, row4Y)), module, Xenostasis::BBVOL_PARAM));
 	addParam(createParamCentered<XenostasisKnob>(toKnobPx(Vec(x5, row4Y)), module, Xenostasis::BBMODE_PARAM));
     Vec energyLightPos = toKnobPx(Vec(lightX, lightRowY - 4.f));
-    energyLightPos.x -= 15.f;
+    energyLightPos.x -= 3.f;
     addChild(createLightCentered<SmallLight<GreenLight>>(energyLightPos, module, Xenostasis::ENERGY_LIGHT));
 
     Vec stormLightPos = toKnobPx(Vec(lightX, lightRowY + 4.f));
-    stormLightPos.x -= 15.f;
+    stormLightPos.x -= 3.f;
     addChild(createLightCentered<SmallLight<GreenLight>>(stormLightPos, module, Xenostasis::STORM_LIGHT));
 
         // ──────────────────────────────
         // Row 4b: Bytebeat tuning
         // ──────────────────────────────
         // Keep vertical spacing consistent with other rows (row2->row3 and row3->row4 are 17mm).
-        float row4bY = 76.f;
+        float row4bY = 69.7f - (9.f / 5.08f);
 #ifndef METAMODULE
     addChild(xsCreateLabelPxYOffset(Vec(x1, row4bY - 7.f), knobsYOffsetPx, "BB TUNE", 7.5f, uiText));
+    addChild(xsCreateLabelPxYOffset(Vec(x2, row4bY - 7.f), knobsYOffsetPx, "F CUT", 7.5f, uiText));
+    addChild(xsCreateLabelPxYOffset(Vec(x3, row4bY - 7.f), knobsYOffsetPx, "F RES", 7.5f, uiText));
+    addChild(xsCreateLabelPxYOffset(Vec((x2 + x3) * 0.5f - 6.f / 5.08f, row4bY + 9.5f), knobsYOffsetPx - 16.f, "FILTER", 5.5f, uiText));
+    addChild(xsCreateLabelPxYOffset(Vec(x4, row4bY - 7.f), knobsYOffsetPx, "ENV/WIDTH", 7.5f, uiText));
+    addChild(xsCreateLabelPxYOffset(Vec(x5, row4bY - 7.f), knobsYOffsetPx, "WT FRAME", 7.5f, uiText));
 #endif
         addParam(createParamCentered<XenostasisKnob>(toKnobPx(Vec(x1, row4bY)), module, Xenostasis::BBPITCH_PARAM));
+        addParam(createParamCentered<XenostasisKnob>(toKnobPx(Vec(x2, row4bY)), module, Xenostasis::FILTER_CUTOFF_PARAM));
+        addParam(createParamCentered<XenostasisKnob>(toKnobPx(Vec(x3, row4bY)), module, Xenostasis::FILTER_RESONANCE_PARAM));
+        {
+            // 3-way filter mode switch: OFF / LADDER / COMB -- horizontal, 52.5% of CKSSThreeHorizontal
+            struct XsFilterSwitch : CKSSThreeHorizontal {
+                XsFilterSwitch() { box.size = box.size.mult(0.525f); }
+            };
+            // Centre the switch horizontally between F CUT (x2) and F RES (x3)
+            Vec switchPx = toKnobPx(Vec((x2 + x3) * 0.5f, row4bY + 11.f)).minus(Vec(6.f, 16.f));
+            addParam(createParamCentered<XsFilterSwitch>(switchPx, module, Xenostasis::FILTER_MODE_PARAM));
+        }
+        addParam(createParamCentered<XenostasisKnob>(toKnobPx(Vec(x4, row4bY)), module, Xenostasis::DECAY_PARAM));
+        addParam(createParamCentered<XenostasisKnob>(toKnobPx(Vec(x5, row4bY)), module, Xenostasis::FRAME_SCROLL_PARAM));
 
         // ──────────────────────────────
-        // Row 5: CV inputs (5 jacks)
+        // Port rows: two rows of 7, equally spaced and centered.
+        // portStepMm = knob column step minus 15px (10px tighter than the previous 5px reduction).
         // ──────────────────────────────
-        float row5Y = 82.f;
-        // Even port spacing: align to the same 5-column grid as the knobs.
-        float cv1X = x1, cv2X = x2, cv3X = x3, cv4X = x4, cv5X = x5;
-		const float cvExtraYOffsetPx = 20.f;
-		auto toCvIoPx = [&](Vec mmPos) -> Vec {
-			Vec pxPos = toIoPx(mmPos);
-			pxPos.y += cvExtraYOffsetPx;
-			return pxPos;
-		};
+        float row5Y = 92.f;
+        float panelCx = (x1 + x5) * 0.5f;
+        float portStepMm = xStep - (15.f / 5.08f);   // 10px closer than before
+        const float cvExtraYOffsetPx = 10.f;  // ports+labels: net down 4px from knob shift
+        auto toCvIoPx = [&](Vec mmPos) -> Vec {
+            Vec pxPos = toIoPx(mmPos);
+            pxPos.y += cvExtraYOffsetPx - 15.f;
+            return pxPos;
+        };
+        float labelYBase = (ioYOffsetPx - ioShiftUpPx) - 6.f + cvExtraYOffsetPx - 10.f;
+
+        // Bottom port row (7): LEFT_OUT | V/OCT | TRIG | CHAOS | CROSS | TBL | RIGHT_OUT
+        float p1 = panelCx - 3.f * portStepMm;
+        float p2 = panelCx - 2.f * portStepMm;
+        float p3 = panelCx - 1.f * portStepMm;
+        float p4 = panelCx;
+        float p5 = panelCx + 1.f * portStepMm;
+        float p6 = panelCx + 2.f * portStepMm;
+        float p7 = panelCx + 3.f * portStepMm;
 #ifndef METAMODULE
-    addChild(xsCreateLabelPxYOffset(Vec(cv1X, row5Y - 5.f), (ioYOffsetPx - ioShiftUpPx) - 6.f + cvExtraYOffsetPx, "V/OCT", 6.5f, uiText));
-    addChild(xsCreateLabelPxYOffset(Vec(cv2X, row5Y - 5.f), (ioYOffsetPx - ioShiftUpPx) - 6.f + cvExtraYOffsetPx, "TRIG", 6.5f, uiText));
-    addChild(xsCreateLabelPxYOffset(Vec(cv3X, row5Y - 5.f), (ioYOffsetPx - ioShiftUpPx) - 6.f + cvExtraYOffsetPx, "CHAOS", 6.5f, uiText));
-    addChild(xsCreateLabelPxYOffset(Vec(cv4X, row5Y - 5.f), (ioYOffsetPx - ioShiftUpPx) - 6.f + cvExtraYOffsetPx, "CROSS", 6.5f, uiText));
-    addChild(xsCreateLabelPxYOffset(Vec(cv5X, row5Y - 5.f), (ioYOffsetPx - ioShiftUpPx) - 6.f + cvExtraYOffsetPx, "TBL", 6.5f, uiText));
+        addChild(xsCreateLabelPxYOffset(Vec(p1, row5Y - 5.f), labelYBase, "LEFT",  6.5f, uiText));
+        addChild(xsCreateLabelPxYOffset(Vec(p2, row5Y - 5.f), labelYBase, "V/OCT", 6.5f, uiText));
+        addChild(xsCreateLabelPxYOffset(Vec(p3, row5Y - 5.f), labelYBase, "TRIG",  6.5f, uiText));
+        addChild(xsCreateLabelPxYOffset(Vec(p4, row5Y - 5.f), labelYBase, "CHAOS", 6.5f, uiText));
+        addChild(xsCreateLabelPxYOffset(Vec(p5, row5Y - 5.f), labelYBase, "CROSS", 6.5f, uiText));
+        addChild(xsCreateLabelPxYOffset(Vec(p6, row5Y - 5.f), labelYBase, "TBL",   6.5f, uiText));
+        addChild(xsCreateLabelPxYOffset(Vec(p7, row5Y - 5.f), labelYBase, "RIGHT", 6.5f, uiText));
 #endif
-    addInput(createInputCentered<MVXPort>(toCvIoPx(Vec(cv1X, row5Y)), module, Xenostasis::VOCT_INPUT));
-    addInput(createInputCentered<MVXPort>(toCvIoPx(Vec(cv2X, row5Y)), module, Xenostasis::CLOCK_INPUT));
-    addInput(createInputCentered<MVXPort>(toCvIoPx(Vec(cv3X, row5Y)), module, Xenostasis::CHAOS_CV_INPUT));
-    addInput(createInputCentered<MVXPort>(toCvIoPx(Vec(cv4X, row5Y)), module, Xenostasis::CROSS_CV_INPUT));
-    addInput(createInputCentered<MVXPort>(toCvIoPx(Vec(cv5X, row5Y)), module, Xenostasis::TABLE_CV_INPUT));
+        addOutput(createOutputCentered<XenostasisOutPort>(toCvIoPx(Vec(p1, row5Y)), module, Xenostasis::LEFT_OUTPUT));
+        addInput (createInputCentered <MVXPort>           (toCvIoPx(Vec(p2, row5Y)), module, Xenostasis::VOCT_INPUT));
+        addInput (createInputCentered <MVXPort>           (toCvIoPx(Vec(p3, row5Y)), module, Xenostasis::CLOCK_INPUT));
+        addInput (createInputCentered <MVXPort>           (toCvIoPx(Vec(p4, row5Y)), module, Xenostasis::CHAOS_CV_INPUT));
+        addInput (createInputCentered <MVXPort>           (toCvIoPx(Vec(p5, row5Y)), module, Xenostasis::CROSS_CV_INPUT));
+        addInput (createInputCentered <MVXPort>           (toCvIoPx(Vec(p6, row5Y)), module, Xenostasis::TABLE_CV_INPUT));
+        addOutput(createOutputCentered<XenostasisOutPort>(toCvIoPx(Vec(p7, row5Y)), module, Xenostasis::RIGHT_OUTPUT));
 
-        // ──────────────────────────────
-        // Row 5b: Extra CV inputs (3 jacks) — placed above TRIG/CHAOS/CROSS
-        // ──────────────────────────────
-        float row5bY = row5Y - 12.f;
-        float cv6X = x2, cv7X = x3, cv8X = x4;
+        // Top port row (7): F.CUT | F.RES | DENS | BB | MODE | TEAR | BBTUNE
+        float row5bY = row5Y - 12.f + (8.f / 5.08f);  // 3px closer vertically to bottom row
+        float q1 = panelCx - 3.f * portStepMm;
+        float q2 = panelCx - 2.f * portStepMm;
+        float q3 = panelCx - 1.f * portStepMm;
+        float q4 = panelCx;
+        float q5 = panelCx + 1.f * portStepMm;
+        float q6 = panelCx + 2.f * portStepMm;
+        float q7 = panelCx + 3.f * portStepMm;
 #ifndef METAMODULE
-    addChild(xsCreateLabelPxYOffset(Vec(cv6X, row5bY - 5.f), (ioYOffsetPx - ioShiftUpPx) - 6.f + cvExtraYOffsetPx, "DENS", 6.5f, uiText));
-    addChild(xsCreateLabelPxYOffset(Vec(cv7X, row5bY - 5.f), (ioYOffsetPx - ioShiftUpPx) - 6.f + cvExtraYOffsetPx, "BB", 6.5f, uiText));
-    addChild(xsCreateLabelPxYOffset(Vec(cv8X, row5bY - 5.f), (ioYOffsetPx - ioShiftUpPx) - 6.f + cvExtraYOffsetPx, "MODE", 6.5f, uiText));
+        addChild(xsCreateLabelPxYOffset(Vec(q1, row5bY - 5.f), labelYBase, "F.CUT",  6.5f, uiText));
+        addChild(xsCreateLabelPxYOffset(Vec(q2, row5bY - 5.f), labelYBase, "F.RES",  6.5f, uiText));
+        addChild(xsCreateLabelPxYOffset(Vec(q3, row5bY - 5.f), labelYBase, "DENS",   6.5f, uiText));
+        addChild(xsCreateLabelPxYOffset(Vec(q4, row5bY - 5.f), labelYBase, "BB",     6.5f, uiText));
+        addChild(xsCreateLabelPxYOffset(Vec(q5, row5bY - 5.f), labelYBase, "MODE",   6.5f, uiText));
+        addChild(xsCreateLabelPxYOffset(Vec(q6, row5bY - 5.f), labelYBase, "TEAR",   6.5f, uiText));
+        addChild(xsCreateLabelPxYOffset(Vec(q7, row5bY - 5.f), labelYBase, "BBTUNE", 6.5f, uiText));
 #endif
-    addInput(createInputCentered<MVXPort>(toCvIoPx(Vec(cv6X, row5bY)), module, Xenostasis::DENSITY_CV_INPUT));
-    addInput(createInputCentered<MVXPort>(toCvIoPx(Vec(cv7X, row5bY)), module, Xenostasis::BBCHAR_CV_INPUT));
-    addInput(createInputCentered<MVXPort>(toCvIoPx(Vec(cv8X, row5bY)), module, Xenostasis::BBMODE_CV_INPUT));
-
-        // ──────────────────────────────
-        // Row 6 (bottom): Outputs
-        // ──────────────────────────────
-        float row6Y = 108.f;
-        // Even port spacing: align outputs to the same grid columns.
-        float outLX = x2, outRX = x4;
-        Vec outLPx = toIoPx(Vec(outLX, row6Y));
-        Vec outRPx = toIoPx(Vec(outRX, row6Y));
-        // Move outs outward by 25px.
-        outLPx.x -= 25.f;
-        outRPx.x += 25.f;
-        // Global IO moved down by 14px; pull L/R outs back up.
-        outLPx.y += -15.f;
-        outRPx.y += -15.f;
-
-    #ifndef METAMODULE
-    		{
-    			constexpr float outLabelFontPx = 8.5f;
-    			constexpr float portHalfPx = 12.f;
-    			constexpr float marginPx = 4.f;
-
-    			float leftLabelY = outLPx.y - portHalfPx - marginPx - outLabelFontPx * 0.5f;
-                auto* leftOutLabel = new XsPanelLabel(Vec(outLPx.x, leftLabelY), "LEFT", outLabelFontPx, uiText);
-    			addChild(leftOutLabel);
-
-    			float rightLabelY = outRPx.y - portHalfPx - marginPx - outLabelFontPx * 0.5f;
-                auto* rightOutLabel = new XsPanelLabel(Vec(outRPx.x, rightLabelY), "RIGHT", outLabelFontPx, uiText);
-    			addChild(rightOutLabel);
-    		}
-    #endif
-        addOutput(createOutputCentered<MVXPort>(outLPx, module, Xenostasis::LEFT_OUTPUT));
-        addOutput(createOutputCentered<MVXPort>(outRPx, module, Xenostasis::RIGHT_OUTPUT));
+        addInput(createInputCentered<MVXPort>(toCvIoPx(Vec(q1, row5bY)), module, Xenostasis::FILTER_CUTOFF_CV_INPUT));
+        addInput(createInputCentered<MVXPort>(toCvIoPx(Vec(q2, row5bY)), module, Xenostasis::FILTER_RESONANCE_CV_INPUT));
+        addInput(createInputCentered<MVXPort>(toCvIoPx(Vec(q3, row5bY)), module, Xenostasis::DENSITY_CV_INPUT));
+        addInput(createInputCentered<MVXPort>(toCvIoPx(Vec(q4, row5bY)), module, Xenostasis::BBCHAR_CV_INPUT));
+        addInput(createInputCentered<MVXPort>(toCvIoPx(Vec(q5, row5bY)), module, Xenostasis::BBMODE_CV_INPUT));
+        addInput(createInputCentered<MVXPort>(toCvIoPx(Vec(q6, row5bY)), module, Xenostasis::TEAR_CV_INPUT));
+        addInput(createInputCentered<MVXPort>(toCvIoPx(Vec(q7, row5bY)), module, Xenostasis::BBPITCH_CV_INPUT));
     }
 };
 

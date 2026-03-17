@@ -1,6 +1,8 @@
 #pragma once
 #include <rack.hpp>
 
+#include "version.h"
+
 #ifndef METAMODULE
 #include <componentlibrary.hpp>
 #include <cmath>
@@ -18,7 +20,10 @@ extern Model* modelSlideWyrm;
 extern Model* modelSeptagon;
 extern Model* modelMinimalith;
 extern Model* modelAmenolith;
+extern Model* modelPhaseon1;
+#ifndef METAMODULE
 extern Model* modelPhaseon;
+#endif
 extern Model* modelXenostasis;
 
 #ifndef METAMODULE
@@ -178,6 +183,41 @@ struct MVXKnob : app::Knob {
 		Widget::draw(args);
 	}
 };
+
+// Red-accent variant of MVXKnob, sized to match RoundSmallBlackKnob exactly.
+// Uses MVXKnob_red.png (turning part) and MVXKnob_red_BG.png (background).
+struct MVXKnob_red : MVXKnob {
+	MVXKnob_red() {
+		bgPath = asset::plugin(pluginInstance, "res/knobs/MVXKnob_red_BG.png");
+		fgPath = asset::plugin(pluginInstance, "res/knobs/MVXKnob_red.png");
+		// Invalidate cached handles so the new paths are loaded.
+		bgHandle = -1;
+		fgHandle = -1;
+		// Match RoundSmallBlackKnob size exactly.
+		componentlibrary::RoundSmallBlackKnob ref;
+		box.size = ref.box.size;
+	}
+};
+
+// Grey variant of MVXKnob — used for the TEAR knob.
+// Uses MVXKnob_grey.png (turning part) and MVXKnob_grey_BG.png (background).
+struct MVXKnob_grey : MVXKnob {
+	MVXKnob_grey() {
+		bgPath = asset::plugin(pluginInstance, "res/knobs/MVXKnob_grey_BG.png");
+		fgPath = asset::plugin(pluginInstance, "res/knobs/MVXKnob_grey.png");
+		// Invalidate cached handles so the new paths are loaded.
+		bgHandle = -1;
+		fgHandle = -1;
+		// 20% larger than RoundSmallBlackKnob.
+		componentlibrary::RoundSmallBlackKnob ref;
+		box.size = ref.box.size.mult(1.2f);
+	}
+};
+
 #else
-using MVXPort = componentlibrary::PJ301MPort;
+using MVXPort      = componentlibrary::PJ301MPort;
+// MetaModule doesn't render custom PNG knobs; fall back to standard knob widgets.
+using MVXKnob      = componentlibrary::RoundSmallBlackKnob;
+using MVXKnob_red  = componentlibrary::RoundSmallBlackKnob;
+using MVXKnob_grey = componentlibrary::RoundSmallBlackKnob;
 #endif

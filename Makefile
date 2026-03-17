@@ -21,6 +21,7 @@ SOURCES += src/sampler/DrumKits.cpp
 
 # Phaseon (FM + Wavetable monster voice)
 SOURCES += src/Phaseon.cpp
+SOURCES += src/Phaseon1.cpp
 SOURCES += src/phaseon/PhaseonOperator.cpp
 SOURCES += src/phaseon/PhaseonWavetable.cpp
 

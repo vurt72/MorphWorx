@@ -15,6 +15,19 @@ using namespace slidewyrm;
 
 // Steps choices for the 3-way switch
 static const int STEPS_CHOICES[] = {8, 16, 32};
+static constexpr int CONTROL_RATE_SAMPLES = 64;
+static constexpr int LIGHT_RATE_SAMPLES = 64;
+
+static inline float fastExp2Approx(float x) {
+	int i = (int)std::floor(x);
+	float f = x - (float)i;
+	float poly = 1.0f + f * (0.69314718f + f * (0.24022651f + f * 0.05550411f));
+	return std::ldexp(poly, i);
+}
+
+static inline float fastExpApprox(float x) {
+	return fastExp2Approx(x * 1.44269504089f);
+}
 
 // Custom ParamQuantity for Scale that shows names
 struct ScaleParamQuantity : ParamQuantity {
@@ -169,6 +182,13 @@ struct SlideWyrm : Module {
 	float accentTotalSamples = 960.f; // Total envelope duration in samples
 	bool accentInDecay = false;
 	int controlRateDivider = 0;
+	int lightRateDivider = 0;
+
+	// Cached step flags for output/lights (updated on clock edge)
+	bool currStepIsSlide = false;
+	bool currStepIsAccent = false;
+	bool currStepIsOctUp = false;
+	bool currStepIsOctDown = false;
 	
 	// Display
 	int currStepSemitone = 0;
@@ -406,19 +426,13 @@ struct SlideWyrm : Module {
 	
 	void process(const ProcessArgs& args) override {
 		sampleCounter++;
-		
-		// Calculate transpose CV (needed every sample for pitch output)
 		float transposeCV = 0.f;
-		if (inputs[TRANSPOSE_INPUT].isConnected()) {
-			transposeCV = inputs[TRANSPOSE_INPUT].getVoltage();
-		}
 		
-		// Control-rate parameter reads (every 32 samples)
-		if (++controlRateDivider >= 32) {
+		// Control-rate parameter reads
+		if (++controlRateDivider >= CONTROL_RATE_SAMPLES) {
 			controlRateDivider = 0;
 			scale = (int)params[SCALE_PARAM].getValue();
 			octaveOffset = (int)params[OCTAVE_PARAM].getValue();
-			densityEncoder = (int)params[DENSITY_PARAM].getValue();
 			int stepsIdx = (int)params[STEPS_PARAM].getValue();
 			numSteps = STEPS_CHOICES[clamp(stepsIdx, 0, 2)];
 			lockSeed = params[LOCK_SEED_PARAM].getValue() > 0.5f;
@@ -428,14 +442,6 @@ struct SlideWyrm : Module {
 			}
 			
 			quantizer.setScale(scale);
-			quantizer.setRoot(clamp((int)params[ROOT_PARAM].getValue(), 0, 11));
-			
-			int densityCV = 0;
-			if (inputs[DENSITY_CV_INPUT].isConnected()) {
-				float cv = inputs[DENSITY_CV_INPUT].getVoltage();
-				densityCV = (int)(cv / 10.f * 15.f);
-			}
-			currentDensity = clamp(densityEncoder + densityCV, 0, 14);
 			accentShape = (int)params[ACCENT_SHAPE_PARAM].getValue();
 			accentMode = (int)params[ACCENT_MODE_PARAM].getValue();
 		}
@@ -467,6 +473,22 @@ struct SlideWyrm : Module {
 		
 		// Clock
 		if (clockTrigger.process(inputs[CLOCK_INPUT].getVoltage(), 0.1f, 2.f)) {
+			// Density affects pattern regeneration decisions; evaluating at step edges
+			// preserves musical intent while reducing per-sample control overhead.
+			densityEncoder = (int)params[DENSITY_PARAM].getValue();
+			int densityCV = 0;
+			if (inputs[DENSITY_CV_INPUT].isConnected()) {
+				float cv = inputs[DENSITY_CV_INPUT].getVoltage();
+				densityCV = (int)(cv / 10.f * 15.f);
+			}
+			currentDensity = clamp(densityEncoder + densityCV, 0, 14);
+
+			// Read transpose once per step; this preserves tight clock-edge behavior
+			// and removes redundant per-sample input work.
+			if (inputs[TRANSPOSE_INPUT].isConnected()) {
+				transposeCV = inputs[TRANSPOSE_INPUT].getVoltage();
+			}
+
 			// Update effective ROOT at the same cadence as pitch selection.
 			// If patched from PITCH_OUTPUT, this makes ROOT follow SlideWyrm pitch (pitch-class).
 			if (inputs[ROOT_CV_INPUT].isConnected()) {
@@ -491,7 +513,7 @@ struct SlideWyrm : Module {
 				int slideIdx = clamp((int)(slideAmount + 0.5f), 0, 3);
 				float slideTime = slideTimes[slideIdx];
 				if (slideTime > 0.001f) {
-					cachedSlideCoeff = 1.f - std::exp(-1.f / (slideTime * args.sampleRate));
+					cachedSlideCoeff = 1.f - fastExpApprox(-1.f / (slideTime * args.sampleRate));
 				} else {
 					cachedSlideCoeff = 1.0f; // instant
 				}
@@ -518,9 +540,14 @@ struct SlideWyrm : Module {
 			
 			int stepPv = step;
 			step = getNextStep(step);
+			bool prevStepSlid = stepIsSlid(stepPv) && slideAmount > 0.f;
+			currStepIsSlide = stepIsSlid(step);
+			currStepIsAccent = stepIsAccent(step);
+			currStepIsOctUp = stepIsOctUp(step);
+			currStepIsOctDown = stepIsOctDown(step);
 			
 			// Handle slide — respect slideAmount
-			if (stepIsSlid(stepPv) && slideAmount > 0.f) {
+			if (prevStepSlid) {
 				slideStartCV = getPitchForStep(stepPv, transposeCV);
 				currPitchCV = slideStartCV;
 				slideEndCV = getPitchForStep(step, transposeCV);
@@ -531,14 +558,14 @@ struct SlideWyrm : Module {
 			}
 			
 			// Open gate — use gateLengthSec
-			if (stepIsGated(step) || (stepIsSlid(stepPv) && slideAmount > 0.f)) {
+			if (stepIsGated(step) || prevStepSlid) {
 				int gateMode = (int)(params[GATE_MODE_PARAM].getValue());
 				if (gateMode == 0) {
-					currGateCV = stepIsAccent(step) ? 5.f : 3.f;
+					currGateCV = currStepIsAccent ? 5.f : 3.f;
 					int64_t gateTime = (int64_t)(gateLengthSec * args.sampleRate);
 					gateOffSample = sampleCounter + gateTime;
 				} else {
-					currGateCV = stepIsAccent(step) ? 5.f : 3.f;
+					currGateCV = currStepIsAccent ? 5.f : 3.f;
 					int64_t gateTime = (int64_t)(gateLengthSec * args.sampleRate);
 					static const double kGateMultiplier = 1.5;
 					bool extended = false;
@@ -550,7 +577,7 @@ struct SlideWyrm : Module {
 						}
 					} else if (gateMode == 2) {
 						// SLIDE: extend the step we are sliding INTO (arrival-based).
-						if (stepIsSlid(stepPv) && slideAmount > 0.f) {
+						if (prevStepSlid) {
 							gateTime = (int64_t)((double)gateTime * kGateMultiplier);
 							extended = true;
 						}
@@ -586,7 +613,7 @@ struct SlideWyrm : Module {
 				switch (accentMode) {
 					case 0: triggerAccent = (step % 4 == 0); break;
 					case 1: triggerAccent = (step % 8 == 0); break;
-					case 2: triggerAccent = stepIsAccent(step); break;
+					case 2: triggerAccent = currStepIsAccent; break;
 				}
 				if (triggerAccent) {
 					accentActive = true;
@@ -598,7 +625,7 @@ struct SlideWyrm : Module {
 						case 0: { // Snap: 1ms atk, 20ms decay
 							accentAtkSamples = 0.001f * args.sampleRate;
 							float dcyTime = 0.020f;
-							accentDecayCoeff = std::exp(-1.f / (dcyTime * 0.3f * args.sampleRate));
+							accentDecayCoeff = fastExpApprox(-1.f / (dcyTime * 0.3f * args.sampleRate));
 							accentTotalSamples = accentAtkSamples + dcyTime * 3.f * args.sampleRate;
 							break;
 						}
@@ -611,7 +638,7 @@ struct SlideWyrm : Module {
 						case 2: { // Medium: 3ms atk, 60ms decay
 							accentAtkSamples = 0.003f * args.sampleRate;
 							float dcyTime = 0.060f;
-							accentDecayCoeff = std::exp(-1.f / (dcyTime * 0.3f * args.sampleRate));
+							accentDecayCoeff = fastExpApprox(-1.f / (dcyTime * 0.3f * args.sampleRate));
 							accentTotalSamples = accentAtkSamples + dcyTime * 3.f * args.sampleRate;
 							break;
 						}
@@ -625,7 +652,7 @@ struct SlideWyrm : Module {
 		// Gate off timing
 		if (currGateCV > 0.f && gateOffSample > 0 && sampleCounter >= gateOffSample) {
 			gateOffSample = 0;
-			if (!(stepIsSlid(step) && slideAmount > 0.f)) {
+			if (!(currStepIsSlide && slideAmount > 0.f)) {
 				currGateCV = 0.f;
 			}
 		}
@@ -681,11 +708,14 @@ struct SlideWyrm : Module {
 		}
 		outputs[ACCENT_OUTPUT].setVoltage(accentEnvLevel * 8.f);
 		
-		// Lights
-		lights[SLIDE_LIGHT].setBrightness(stepIsSlid(step) ? 1.f : 0.f);
-		lights[ACCENT_LIGHT].setBrightness(stepIsAccent(step) ? 1.f : 0.f);
-		lights[OCTAVE_UP_LIGHT].setBrightness(stepIsOctUp(step) ? 1.f : 0.f);
-		lights[OCTAVE_DOWN_LIGHT].setBrightness(stepIsOctDown(step) ? 1.f : 0.f);
+		// Lights (control-rate to save CPU on MetaModule)
+		if (++lightRateDivider >= LIGHT_RATE_SAMPLES) {
+			lightRateDivider = 0;
+			lights[SLIDE_LIGHT].setBrightness(currStepIsSlide ? 1.f : 0.f);
+			lights[ACCENT_LIGHT].setBrightness(currStepIsAccent ? 1.f : 0.f);
+			lights[OCTAVE_UP_LIGHT].setBrightness(currStepIsOctUp ? 1.f : 0.f);
+			lights[OCTAVE_DOWN_LIGHT].setBrightness(currStepIsOctDown ? 1.f : 0.f);
+		}
 		
 		// Update regeneration (amortized)
 		updateRegeneration();
@@ -696,10 +726,24 @@ struct SlideWyrm : Module {
 		json_object_set_new(rootJ, "seed", json_integer(seed));
 		json_object_set_new(rootJ, "lockSeed", json_boolean(lockSeed));
 		json_object_set_new(rootJ, "step", json_integer(step));
+
+#ifdef METAMODULE
+		json_object_set_new(rootJ, "morphworx_version", json_string(MORPHWORX_VERSION_STRING));
+#endif
 		return rootJ;
 	}
 	
 	void dataFromJson(json_t* rootJ) override {
+
+#ifdef METAMODULE
+		json_t* verJ = json_object_get(rootJ, "morphworx_version");
+		if (verJ && json_is_string(verJ)) {
+			const char* saved = json_string_value(verJ);
+			if (!saved || std::string(saved) != std::string(MORPHWORX_VERSION_STRING)) {
+				return;
+			}
+		}
+#endif
 		json_t* seedJ = json_object_get(rootJ, "seed");
 		if (seedJ) seed = json_integer_value(seedJ);
 		

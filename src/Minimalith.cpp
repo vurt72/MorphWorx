@@ -22,8 +22,8 @@
 #include <span>
 #else
 #include <osdialog.h>
-#include <map>
 #endif
+#include <map>
 
 struct Minimalith : Module {
     enum ParamId {
@@ -33,6 +33,8 @@ struct Minimalith : Module {
     EVO_TRIM_PARAM,
     IM_TRIM_PARAM,
     DRIFT_TRIM_PARAM,
+    TEAR_TRIM_PARAM,
+    TEAR_FOLD_SWITCH_PARAM,
         LOAD_PARAM,
         PANIC_PARAM,
 #ifndef METAMODULE
@@ -45,6 +47,7 @@ struct Minimalith : Module {
     enum InputId {
         GATE_INPUT,
         PITCH_INPUT,
+        TEAR_INPUT,
         CV1_INPUT,
         CV2_INPUT,
         EVO_INPUT,
@@ -81,6 +84,7 @@ struct Minimalith : Module {
     static constexpr int ML_OSC_SHAPE_SQUARE = 2;
     static constexpr int ML_OSC_SHAPE_RAND = 6;
     static constexpr int ML_OSC_SHAPE_OFF = 7;
+    static constexpr int ML_FILTER_TEAR_ID = 49;
 
 
     int currentPatch = 0;
@@ -99,12 +103,27 @@ struct Minimalith : Module {
 #ifndef METAMODULE
     OneSynthParams currentParams;
     bool currentParamsValid = false;
+    OneSynthParams copiedPreset;
+    bool hasCopiedPreset = false;
 #endif
 
     static float mlSmoothstep01(float x) {
         if (x < 0.0f) x = 0.0f;
         if (x > 1.0f) x = 1.0f;
         return x * x * (3.0f - 2.0f * x);
+    }
+
+    static inline uint32_t mlXorshift32(uint32_t& state) {
+        uint32_t x = state;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        state = x;
+        return x;
+    }
+
+    static inline float mlU01FromU32(uint32_t x) {
+        return (float)((x >> 8) & 0x00FFFFFFu) * (1.0f / 16777215.0f);
     }
 
     // Bake Minimalith's trim-driven modulation into actual PreenFM2 patch params.
@@ -261,23 +280,46 @@ struct Minimalith : Module {
     }
 
 #ifndef METAMODULE
-
     // Deprecated: old VCV-only external trim recall mechanism.
-    // We keep the file format around for compatibility, but new behavior bakes
-    // trims into the patch on save for hardware portability.
+    // We keep the file format around for compatibility.
+#endif
+
+    // Per-bank, per-slot sidecar values used by both Rack and MetaModule.
+    // This keeps UI trims/switches recallable even when they are not native
+    // PreenFM2 patch parameters.
     struct TrimState {
         float evo = 0.0f;
         float im = 0.5f;
         float drift = 0.5f;
+        float tear = 0.0f;
+        float tearFold = 1.0f;
     };
     std::map<int, TrimState> trimBySlot;
+#ifndef METAMODULE
+    TrimState copiedTrimState;
+#endif
 
     std::string trimsDbPath() const {
+#ifdef METAMODULE
+        auto normalizeVolume = [](std::string vol) {
+            if (vol.empty()) vol = "sdc:/";
+            if (vol == "ram:/" || vol == "ram:") vol = "sdc:/";
+            if (!vol.empty() && vol.back() != '/') vol.push_back('/');
+            return vol;
+        };
+        std::string vol = normalizeVolume(std::string(MetaModule::Patch::get_volume()));
+        return vol + "minimalith/MinimalithTrims.json";
+#else
         return asset::user("MorphWorx/MinimalithTrims.json");
+#endif
     }
 
     std::string trimsDbPathLegacy() const {
+#ifdef METAMODULE
+        return trimsDbPath();
+#else
         return asset::user("Bemushroomed/MinimalithTrims.json");
+#endif
     }
 
     std::string trimsBankKey() const {
@@ -370,9 +412,13 @@ struct Minimalith : Module {
             json_t* evoJ = json_object_get(slotJ, "evo");
             json_t* imJ = json_object_get(slotJ, "im");
             json_t* driftJ = json_object_get(slotJ, "drift");
+            json_t* tearJ = json_object_get(slotJ, "tear");
+            json_t* tearFoldJ = json_object_get(slotJ, "tearFold");
             if (evoJ) st.evo = clamp((float)json_number_value(evoJ), 0.0f, 1.0f);
             if (imJ) st.im = clamp((float)json_number_value(imJ), 0.0f, 1.0f);
             if (driftJ) st.drift = clamp((float)json_number_value(driftJ), 0.0f, 1.0f);
+            if (tearJ) st.tear = clamp((float)json_number_value(tearJ), 0.0f, 1.0f);
+            if (tearFoldJ) st.tearFold = clamp((float)json_number_value(tearFoldJ), 0.0f, 1.0f);
             trimBySlot[slot] = st;
         }
 
@@ -415,6 +461,8 @@ struct Minimalith : Module {
             json_object_set_new(slotObj, "evo", json_real(st.evo));
             json_object_set_new(slotObj, "im", json_real(st.im));
             json_object_set_new(slotObj, "drift", json_real(st.drift));
+            json_object_set_new(slotObj, "tear", json_real(st.tear));
+            json_object_set_new(slotObj, "tearFold", json_real(st.tearFold));
             json_object_set_new(bankJ, std::to_string(slot).c_str(), slotObj);
         }
         json_object_set_new(banksJ, trimsBankKey().c_str(), bankJ);
@@ -440,6 +488,8 @@ struct Minimalith : Module {
         params[EVO_TRIM_PARAM].setValue(st.evo);
         params[IM_TRIM_PARAM].setValue(st.im);
         params[DRIFT_TRIM_PARAM].setValue(st.drift);
+        params[TEAR_TRIM_PARAM].setValue(st.tear);
+        params[TEAR_FOLD_SWITCH_PARAM].setValue(st.tearFold > 0.5f ? 1.0f : 0.0f);
     }
 
     void trimsCaptureCurrentToSlot(int slot) {
@@ -447,9 +497,10 @@ struct Minimalith : Module {
         st.evo = clamp(params[EVO_TRIM_PARAM].getValue(), 0.0f, 1.0f);
         st.im = clamp(params[IM_TRIM_PARAM].getValue(), 0.0f, 1.0f);
         st.drift = clamp(params[DRIFT_TRIM_PARAM].getValue(), 0.0f, 1.0f);
+        st.tear = clamp(params[TEAR_TRIM_PARAM].getValue(), 0.0f, 1.0f);
+        st.tearFold = params[TEAR_FOLD_SWITCH_PARAM].getValue() > 0.5f ? 1.0f : 0.0f;
         trimBySlot[slot] = st;
     }
-#endif
 
     // Edge detectors
     bool lastGate = false;
@@ -460,7 +511,24 @@ struct Minimalith : Module {
     bool lastMorphBtn = false;
 #endif
     float lastPitch = 0.0f;  // Track pitch for retrigger detection
-    float slewedVoct = 0.0f; // Smoothed V/Oct for legato glide
+    bool exportTearLegacyFallback = true;
+    static constexpr int kTearDelaySize = 128;
+    float tearDelayL[kTearDelaySize] = {};
+    float tearDelayR[kTearDelaySize] = {};
+    int tearDelayWrite = 0;
+    uint32_t tearNoiseState = 0x6D2B79F5u;
+    float tearWet = 0.0f;
+
+    void resetTearState() {
+        for (int i = 0; i < kTearDelaySize; ++i) {
+            tearDelayL[i] = 0.0f;
+            tearDelayR[i] = 0.0f;
+        }
+        tearDelayWrite = 0;
+        tearNoiseState = 0x6D2B79F5u;
+        tearWet = 0.0f;
+    }
+
     volatile bool loadRequested = false;
 #ifdef METAMODULE
     volatile bool pendingBankLoad = false;
@@ -480,6 +548,7 @@ struct Minimalith : Module {
     Pickup01 evoPickup;
     Pickup01 imPickup;
     Pickup01 driftPickup;
+    Pickup01 tearPickup;
     int algoBaselineQ = 0;
     bool algoPickupActive = false;
 
@@ -490,6 +559,9 @@ struct Minimalith : Module {
         imPickup.active = false;
         driftPickup.baseline = clamp(params[DRIFT_TRIM_PARAM].getValue(), 0.0f, 1.0f);
         driftPickup.active = false;
+
+        tearPickup.baseline = clamp(params[TEAR_TRIM_PARAM].getValue(), 0.0f, 1.0f);
+        tearPickup.active = false;
 
         algoBaselineQ = (int)(params[ALGO_PARAM].getValue() + 0.5f);
         if (algoBaselineQ < 0) algoBaselineQ = 0;
@@ -585,6 +657,8 @@ struct Minimalith : Module {
         configParam(EVO_TRIM_PARAM, 0.f, 1.f, 0.f, "EVO Trim (manual when EVO jack unplugged)");
         configParam(IM_TRIM_PARAM, 0.f, 1.f, 0.5f, "IM Scan Trim (manual when IM SCAN jack unplugged)");
         configParam(DRIFT_TRIM_PARAM, 0.f, 1.f, 0.5f, "Drift Trim (manual when DRIFT jack unplugged)");
+        configParam(TEAR_TRIM_PARAM, 0.f, 1.f, 0.f, "Tear");
+        configSwitch(TEAR_FOLD_SWITCH_PARAM, 0.f, 1.f, 1.f, "Tear Fold", {"Off", "On"});
         configButton(LOAD_PARAM, "Load Bank");
 #ifndef METAMODULE
         configButton(MORPH_PARAM, "Morph 2 Random Presets");
@@ -593,6 +667,7 @@ struct Minimalith : Module {
 #endif
         configInput(GATE_INPUT, "Gate");
         configInput(PITCH_INPUT, "V/Oct Pitch");
+        configInput(TEAR_INPUT, "Tear CV (-5V..+5V)");
         configInput(CV1_INPUT, "Algorithm CV (-5V..+5V sweeps Algo 1-28)");
         configInput(CV2_INPUT, "IM Scanner CV (-5V..+5V spotlights IM1-IM5)");
         configInput(EVO_INPUT, "Evolution CV (0-10V: shape + envelope modulation)");
@@ -673,6 +748,7 @@ struct Minimalith : Module {
         if (bankLoader.loadBank(path)) {
             bankPath = path;
             currentPatch = patchIdx;
+            trimsLoadForBank();
             // Release any playing note before switching presets to prevent voice crashes  
             if (engineReady) {
                 engine.noteOff();
@@ -713,13 +789,33 @@ struct Minimalith : Module {
             params[ALGO_PARAM].setValue((float)engine.getBaseAlgo());
         #endif
 
-        #ifndef METAMODULE
-                // VCV: reset trims to neutral on preset load so saved patches are self-contained.
-                // Neutral points: IM=0.5 (amount=0), EVO=0.0, DRIFT=0.5 (0 drift).
-                params[IM_TRIM_PARAM].setValue(0.5f);
-                params[EVO_TRIM_PARAM].setValue(0.0f);
-                params[DRIFT_TRIM_PARAM].setValue(0.5f);
-        #endif
+            // Apply per-slot sidecar values (trim + tear controls) if available.
+            trimsApplyForSlot(currentPatch);
+
+            // If no sidecar exists for this slot, recover TEAR controls from patch FX
+            // so hardware-written TEAR presets remain portable.
+            auto it = trimBySlot.find(currentPatch);
+            if (it == trimBySlot.end()) {
+                int effectType = (int)(patchParams.effect.type + 0.5f);
+                if (effectType == ML_FILTER_TEAR_ID) {
+                    params[TEAR_TRIM_PARAM].setValue(clamp(patchParams.effect.param1, 0.0f, 1.0f));
+                    params[TEAR_FOLD_SWITCH_PARAM].setValue(patchParams.effect.param2 > 0.5f ? 1.0f : 0.0f);
+                } else {
+                    params[TEAR_TRIM_PARAM].setValue(0.0f);
+                    params[TEAR_FOLD_SWITCH_PARAM].setValue(1.0f);
+                }
+            }
+
+    #ifndef METAMODULE
+            // If no sidecar slot data exists, keep prior behavior defaults.
+            TrimState slotState = trimsGetForSlot(currentPatch);
+            it = trimBySlot.find(currentPatch);
+            if (it == trimBySlot.end()) {
+            params[IM_TRIM_PARAM].setValue(0.5f);
+            params[EVO_TRIM_PARAM].setValue(0.0f);
+            params[DRIFT_TRIM_PARAM].setValue(0.5f);
+            }
+    #endif
 #ifdef METAMODULE
             // MetaModule: avoid std::string allocations in audio thread.
             mlCopyTrimPresetNameToBuf(patchParams.presetName, mmPresetName, sizeof(mmPresetName));
@@ -771,6 +867,8 @@ struct Minimalith : Module {
         if (!bankLoader.isLoaded()) return;
         int count = bankLoader.getPatchCount();
         if (count <= 1) return;
+        trimsCaptureCurrentToSlot(currentPatch);
+        trimsSaveForBank();
         // Pick a random patch different from current
         int newPatch;
         do {
@@ -778,6 +876,38 @@ struct Minimalith : Module {
         } while (newPatch == currentPatch && count > 1);
         currentPatch = newPatch;
         loadCurrentPatch();
+    }
+
+    void bakeTearInteropForAllBankSlots() {
+        if (!bankLoader.isLoaded()) return;
+
+        trimsCaptureCurrentToSlot(currentPatch);
+        trimsSaveForBank();
+
+        int count = bankLoader.getPatchCount();
+        for (int slot = 0; slot < count; ++slot) {
+            OneSynthParams patchParams;
+            if (!bankLoader.getPatch(slot, patchParams)) continue;
+
+            auto it = trimBySlot.find(slot);
+            if (it == trimBySlot.end()) continue;
+
+            const TrimState& st = it->second;
+            float tearExport = clamp(st.tear, 0.0f, 1.0f);
+            bool foldOn = st.tearFold > 0.5f;
+
+            int existingFxType = (int)(patchParams.effect.type + 0.5f);
+            bool keepExistingTear = (existingFxType == ML_FILTER_TEAR_ID);
+            if (tearExport > 0.0001f || keepExistingTear) {
+                patchParams.effect.type = exportTearLegacyFallback ? 48.0f : (float)ML_FILTER_TEAR_ID;
+                patchParams.effect.param1 = tearExport;
+                patchParams.effect.param2 = foldOn ? 1.0f : 0.0f;
+                if (patchParams.effect.param3 < 0.0f || patchParams.effect.param3 > 2.0f) {
+                    patchParams.effect.param3 = 1.0f;
+                }
+                bankLoader.setPatch(slot, patchParams);
+            }
+        }
     }
 
 #ifndef METAMODULE
@@ -788,8 +918,8 @@ struct Minimalith : Module {
     static constexpr int ML_OSC_SHAPE_MAX = 13;
     static constexpr int ML_LFO_TYPE_MAX = 4;
     // Filter/effect types from src/pfm/SynthState.h enum FILTER_TYPE:
-    // Valid values are 0..48 (FILTER_LAST is 49).
-    static constexpr int ML_FILTER_TYPE_MAX = 48;
+    // Valid values are 0..49 (FILTER_LAST is 50).
+    static constexpr int ML_FILTER_TYPE_MAX = 49;
 
     static int mlRoundClampFilterType(float typeF) {
         // Type is stored as float in patches; keep it stable.
@@ -851,6 +981,7 @@ struct Minimalith : Module {
             /* 46 */ "Teebee",
             /* 47 */ "Svflh",
             /* 48 */ "Crush2",
+            /* 49 */ "Tear",
         };
 
         if (type < 0) type = 0;
@@ -927,7 +1058,7 @@ struct Minimalith : Module {
         // --- Engine (discrete + safe continuous) ---
         out.engine1.algo = mlPickDiscreteClamped(a.engine1.algo, b.engine1.algo, 0, 27);
         out.engine1.velocity = mlClamp01(mlLerp(a.engine1.velocity, b.engine1.velocity, alpha));
-        out.engine1.glide = mlClamp01(mlLerp(a.engine1.glide, b.engine1.glide, alpha));
+        out.engine1.glide = clamp(mlLerp(a.engine1.glide, b.engine1.glide, alpha), 0.0f, 12.0f);
 
         // PreenFM2 engine wrapper forces 1 voice, but keep sane here anyway.
         out.engine1.numberOfVoice = 1.0f;
@@ -1151,6 +1282,82 @@ struct Minimalith : Module {
         updatePatchNameDisplay();
         return true;
     }
+
+    TrimState getCurrentTrimState() {
+        TrimState st;
+        st.evo = clamp(params[EVO_TRIM_PARAM].getValue(), 0.0f, 1.0f);
+        st.im = clamp(params[IM_TRIM_PARAM].getValue(), 0.0f, 1.0f);
+        st.drift = clamp(params[DRIFT_TRIM_PARAM].getValue(), 0.0f, 1.0f);
+        st.tear = clamp(params[TEAR_TRIM_PARAM].getValue(), 0.0f, 1.0f);
+        st.tearFold = params[TEAR_FOLD_SWITCH_PARAM].getValue() > 0.5f ? 1.0f : 0.0f;
+        return st;
+    }
+
+    bool buildCurrentPresetSnapshot(OneSynthParams& out) {
+        if (!bankLoader.isLoaded()) return false;
+
+        OneSynthParams toSave;
+        if (!currentParamsValid) return false;
+        toSave = currentParams;
+
+        if (!inputs[CV1_INPUT].isConnected()) {
+            int algoFromKnob = (int)(params[ALGO_PARAM].getValue() + 0.5f);
+            algoFromKnob = clamp(algoFromKnob, 0, 27);
+            toSave.engine1.algo = (float)algoFromKnob;
+        }
+
+        if (!inputs[CV2_INPUT].isConnected()) {
+            mlBakeImScanTrimIntoPatch(toSave, params[IM_TRIM_PARAM].getValue());
+        }
+        if (!inputs[EVO_INPUT].isConnected()) {
+            mlBakeEvoTrimIntoPatch(toSave, params[EVO_TRIM_PARAM].getValue());
+        }
+        if (!inputs[DRIFT_INPUT].isConnected()) {
+            mlBakeDriftTrimIntoPatch(toSave, params[DRIFT_TRIM_PARAM].getValue());
+        }
+
+        float tearExport = clamp(params[TEAR_TRIM_PARAM].getValue(), 0.0f, 1.0f);
+        bool foldOn = params[TEAR_FOLD_SWITCH_PARAM].getValue() > 0.5f;
+        bool canBakeTear = !inputs[TEAR_INPUT].isConnected();
+        int existingFxType = (int)(toSave.effect.type + 0.5f);
+        bool keepExistingTear = (existingFxType == ML_FILTER_TEAR_ID);
+        if (canBakeTear && (tearExport > 0.0001f || keepExistingTear)) {
+            toSave.effect.type = exportTearLegacyFallback ? 48.0f : (float)ML_FILTER_TEAR_ID;
+            toSave.effect.param1 = tearExport;
+            toSave.effect.param2 = foldOn ? 1.0f : 0.0f;
+            if (toSave.effect.param3 < 0.0f || toSave.effect.param3 > 2.0f) {
+                toSave.effect.param3 = 1.0f;
+            }
+        }
+
+        mlSetPresetNameFromDisplay(toSave, patchNameBase);
+        out = toSave;
+        return true;
+    }
+
+    bool copyCurrentPresetToClipboard() {
+        OneSynthParams snapshot;
+        if (!buildCurrentPresetSnapshot(snapshot)) return false;
+        copiedPreset = snapshot;
+        copiedTrimState = getCurrentTrimState();
+        hasCopiedPreset = true;
+        return true;
+    }
+
+    bool pasteClipboardPresetToCurrentSlot() {
+        if (!hasCopiedPreset) return false;
+        if (!bankLoader.isLoaded()) return false;
+        if (bankPath.empty()) return false;
+
+        if (!bankLoader.setPatch(currentPatch, copiedPreset)) return false;
+        if (!bankLoader.saveBankInPlace()) return false;
+
+        trimBySlot[currentPatch] = copiedTrimState;
+        trimsSaveForBank();
+
+        loadCurrentPatch();
+        return true;
+    }
 #endif
 
         bool saveCurrentToBankSlot() {
@@ -1159,61 +1366,51 @@ struct Minimalith : Module {
 
         OneSynthParams toSave;
     #ifndef METAMODULE
-        if (!currentParamsValid) return false;
-        toSave = currentParams;
+        if (!buildCurrentPresetSnapshot(toSave)) return false;
     #else
         if (!bankLoader.getPatch(currentPatch, toSave)) return false;
     #endif
 
+#ifdef METAMODULE
         // --- Bake in algorithm override if applicable ---
         // If CV1 is connected, algorithm is being modulated externally and we can't
         // meaningfully bake a "current" value; leave the patch algo untouched.
         if (!inputs[CV1_INPUT].isConnected()) {
             int algoFromKnob = (int)(params[ALGO_PARAM].getValue() + 0.5f);
             algoFromKnob = clamp(algoFromKnob, 0, 27);
-    #ifdef METAMODULE
             if (algoPickupActive) {
-            toSave.engine1.algo = (float)algoFromKnob;
+                toSave.engine1.algo = (float)algoFromKnob;
             }
-    #else
-            toSave.engine1.algo = (float)algoFromKnob;
-    #endif
         }
 
         // --- Bake trim-driven modulation into patch values ---
-        if (!inputs[CV2_INPUT].isConnected()) {
-    #ifdef METAMODULE
-            if (imPickup.active) {
+        if (!inputs[CV2_INPUT].isConnected() && imPickup.active) {
             mlBakeImScanTrimIntoPatch(toSave, params[IM_TRIM_PARAM].getValue());
-            }
-    #else
-            mlBakeImScanTrimIntoPatch(toSave, params[IM_TRIM_PARAM].getValue());
-    #endif
         }
-        if (!inputs[EVO_INPUT].isConnected()) {
-    #ifdef METAMODULE
-            if (evoPickup.active) {
+        if (!inputs[EVO_INPUT].isConnected() && evoPickup.active) {
             mlBakeEvoTrimIntoPatch(toSave, params[EVO_TRIM_PARAM].getValue());
-            }
-    #else
-            mlBakeEvoTrimIntoPatch(toSave, params[EVO_TRIM_PARAM].getValue());
-    #endif
         }
-        if (!inputs[DRIFT_INPUT].isConnected()) {
-    #ifdef METAMODULE
-            if (driftPickup.active) {
+        if (!inputs[DRIFT_INPUT].isConnected() && driftPickup.active) {
             mlBakeDriftTrimIntoPatch(toSave, params[DRIFT_TRIM_PARAM].getValue());
-            }
-    #else
-            mlBakeDriftTrimIntoPatch(toSave, params[DRIFT_TRIM_PARAM].getValue());
-    #endif
         }
 
-    #ifndef METAMODULE
-        // Store a readable name in the bank (12 chars max).
-        // Use patchNameBase (without derived "Effect: ..." suffix).
-        mlSetPresetNameFromDisplay(toSave, patchNameBase);
-    #endif
+        // --- Optional TEAR export for PreenFM2 firmware interop ---
+        // Encodes TEAR into effect.type/param1/param2 when TEAR is active.
+        // This keeps old banks unchanged unless TEAR is explicitly used.
+        float tearExport = clamp(params[TEAR_TRIM_PARAM].getValue(), 0.0f, 1.0f);
+        bool foldOn = params[TEAR_FOLD_SWITCH_PARAM].getValue() > 0.5f;
+        bool canBakeTear = !inputs[TEAR_INPUT].isConnected() && tearPickup.active;
+        int existingFxType = (int)(toSave.effect.type + 0.5f);
+        bool keepExistingTear = (existingFxType == ML_FILTER_TEAR_ID);
+        if (canBakeTear && (tearExport > 0.0001f || keepExistingTear)) {
+            toSave.effect.type = exportTearLegacyFallback ? 48.0f : (float)ML_FILTER_TEAR_ID;
+            toSave.effect.param1 = tearExport;
+            toSave.effect.param2 = foldOn ? 1.0f : 0.0f;
+            if (toSave.effect.param3 < 0.0f || toSave.effect.param3 > 2.0f) {
+                toSave.effect.param3 = 1.0f;
+            }
+        }
+#endif
 
         if (!bankLoader.setPatch(currentPatch, toSave)) return false;
         if (!bankLoader.saveBankInPlace()) return false;
@@ -1257,6 +1454,7 @@ struct Minimalith : Module {
                                 if (bankLoader.loadBank(path)) {
                                     bankPath = path;
                                     currentPatch = 0;
+                                    trimsLoadForBank();
                                     pendingBankLoad = true;
                                 }
                                 free(path);
@@ -1314,6 +1512,8 @@ struct Minimalith : Module {
             bool prevBtn = params[PRESET_PREV_PARAM].getValue() > 0.5f;
             bool nextBtn = params[PRESET_NEXT_PARAM].getValue() > 0.5f;
             if (prevBtn && !lastPrev) {
+                trimsCaptureCurrentToSlot(currentPatch);
+                trimsSaveForBank();
                 currentPatch = bankLoader.prevPatch(currentPatch);
                 loadCurrentPatch();
                 int count = bankLoader.getPatchCount();
@@ -1322,6 +1522,8 @@ struct Minimalith : Module {
                 }
             }
             if (nextBtn && !lastNext) {
+                trimsCaptureCurrentToSlot(currentPatch);
+                trimsSaveForBank();
                 currentPatch = bankLoader.nextPatch(currentPatch);
                 loadCurrentPatch();
                 int count = bankLoader.getPatchCount();
@@ -1342,6 +1544,8 @@ struct Minimalith : Module {
             if (patchIdx < 0) patchIdx = 0;
             if (patchIdx >= count) patchIdx = count - 1;
             if (patchIdx != currentPatch) {
+                trimsCaptureCurrentToSlot(currentPatch);
+                trimsSaveForBank();
                 currentPatch = patchIdx;
                 loadCurrentPatch();
             }
@@ -1370,7 +1574,6 @@ struct Minimalith : Module {
             engine.panic();
             lastGate = false;  // Reset gate tracking
             lastPitch = 0.0f;  // Reset pitch tracking
-            slewedVoct = 0.0f; // Reset glide state
         }
         lastPanicBtn = panicBtn;
 
@@ -1383,22 +1586,16 @@ struct Minimalith : Module {
         bool pitchChanged = pitchChange > 0.08f; // ~1 semitone threshold
 
         if (gate && !lastGate) {
-            // Gate just went high — snap pitch instantly (no slew on attack)
-            slewedVoct = voct;
-            float freq = 261.6256f * std::pow(2.0f, voct); // C4 = 0V
+            // Gate just went high — attack starts at target pitch.
+            float freq = 261.6256f * std::exp2(voct); // C4 = 0V
             engine.noteOn(freq, 127);
             lastPitch = voct;
         } else if (gate && lastGate) {
-            // Gate still held  
-            {
-                // Glide always on — slew V/Oct in pitch domain for musical glide
-                const float slewCoeff = 1.0f - expf(-1.0f / (0.045f * args.sampleRate));
-                slewedVoct += (voct - slewedVoct) * slewCoeff;
-                float freq = 261.6256f * std::pow(2.0f, slewedVoct);
-                engine.updatePitch(freq);
-                if (pitchChanged) {
-                    lastPitch = voct;  // Update pitch tracking
-                }
+            // Gate held: update target pitch; engine handles musical glide in log-frequency.
+            float freq = 261.6256f * std::exp2(voct);
+            engine.updatePitch(freq);
+            if (pitchChanged) {
+                lastPitch = voct;  // Update pitch tracking
             }
         } else if (!gate && lastGate) {
             // Gate just went low - note off
@@ -1508,15 +1705,90 @@ struct Minimalith : Module {
         // --- Audio ---
         float outL, outR;
         engine.process(outL, outR);
+
+        // TEAR (lightweight): post-engine fold/noise/comb coloration.
+        // Hard bypass at 0 keeps CPU overhead negligible when disabled.
+        bool tearCvConn = inputs[TEAR_INPUT].isConnected();
+        float tearBase;
+    #ifdef METAMODULE
+        const float tearNow = clamp(params[TEAR_TRIM_PARAM].getValue(), 0.0f, 1.0f);
+        const bool tearActive = mmPickup01Active(tearPickup, tearNow, 0.02f);
+        tearBase = tearActive ? tearNow : 0.0f;
+    #else
+        tearBase = clamp(params[TEAR_TRIM_PARAM].getValue(), 0.0f, 1.0f);
+    #endif
+        float tearTarget = tearCvConn
+            ? clamp(tearBase + inputs[TEAR_INPUT].getVoltage() * 0.2f, 0.0f, 1.0f)
+            : tearBase;
+        if (tearTarget <= 0.0001f) {
+            if (tearWet > 0.0f || tearDelayWrite != 0) {
+                resetTearState();
+            }
+        } else {
+            bool tearFoldEnabled = params[TEAR_FOLD_SWITCH_PARAM].getValue() > 0.5f;
+
+            // Light smoothing only while active.
+            tearWet += (tearTarget - tearWet) * 0.18f;
+            if (tearWet < 0.0001f) {
+                tearWet = 0.0f;
+            }
+
+            int tearDelayLen = 8 + (int)(tearWet * (float)(kTearDelaySize - 9));
+            if (tearDelayLen < 1) tearDelayLen = 1;
+            if (tearDelayLen >= kTearDelaySize) tearDelayLen = kTearDelaySize - 1;
+
+            float drive = 1.0f + 5.5f * tearWet;
+            float foldedL = tearFoldEnabled ? std::sin(outL * drive) : outL;
+            float foldedR = tearFoldEnabled ? std::sin(outR * drive) : outR;
+
+            float nL = mlU01FromU32(mlXorshift32(tearNoiseState)) * 2.0f - 1.0f;
+            float nR = mlU01FromU32(mlXorshift32(tearNoiseState)) * 2.0f - 1.0f;
+            float noiseAmt = 0.004f + 0.028f * tearWet;
+
+            float preL = foldedL + nL * noiseAmt;
+            float preR = foldedR + nR * noiseAmt;
+
+            int read = (tearDelayWrite - tearDelayLen) & (kTearDelaySize - 1);
+            float dL = tearDelayL[read];
+            float dR = tearDelayR[read];
+            float fb = 0.08f + 0.55f * tearWet;
+            float combMix = 0.12f + 0.42f * tearWet;
+
+            tearDelayL[tearDelayWrite] = preL + dL * fb;
+            tearDelayR[tearDelayWrite] = preR + dR * fb;
+            tearDelayWrite = (tearDelayWrite + 1) & (kTearDelaySize - 1);
+
+            float wetL = std::tanh((preL + dL * combMix) * (1.0f + 1.2f * tearWet));
+            float wetR = std::tanh((preR + dR * combMix) * (1.0f + 1.2f * tearWet));
+            outL = outL + (wetL - outL) * tearWet;
+            outR = outR + (wetR - outR) * tearWet;
+        }
+
         float vol = params[VOLUME_PARAM].getValue(); // 0..2
         outputs[LEFT_OUTPUT].setVoltage(outL * vol);
         outputs[RIGHT_OUTPUT].setVoltage(outR * vol);
+
     }
 
     json_t* dataToJson() override {
         json_t* rootJ = json_object();
+
+        // Persist current sidecar trims for the active slot.
+        if (bankLoader.isLoaded()) {
+            trimsCaptureCurrentToSlot(currentPatch);
+            trimsSaveForBank();
+        }
+
         json_object_set_new(rootJ, "bankPath", json_string(bankPath.c_str()));
         json_object_set_new(rootJ, "currentPatch", json_integer(currentPatch));
+        json_object_set_new(rootJ, "tearLegacyExport", json_boolean(exportTearLegacyFallback));
+
+#ifdef METAMODULE
+        // Persist the MorphWorx plugin version alongside module state so
+        // MetaModule firmware can reject patches from mismatched builds.
+        json_object_set_new(rootJ, "morphworx_version", json_string(MORPHWORX_VERSION_STRING));
+#endif
+
         return rootJ;
     }
 
@@ -1529,6 +1801,23 @@ struct Minimalith : Module {
         if (patchJ) {
             currentPatch = json_integer_value(patchJ);
         }
+        json_t* tearLegacyJ = json_object_get(rootJ, "tearLegacyExport");
+        if (tearLegacyJ) {
+            exportTearLegacyFallback = json_boolean_value(tearLegacyJ) != 0;
+        }
+
+#ifdef METAMODULE
+        // On MetaModule, enforce a strict version handshake: if the saved
+        // MorphWorx version does not match the running firmware, treat the
+        // patch as incompatible and leave state at safe defaults.
+        json_t* verJ = json_object_get(rootJ, "morphworx_version");
+        if (verJ && json_is_string(verJ)) {
+            const char* saved = json_string_value(verJ);
+            if (!saved || std::string(saved) != std::string(MORPHWORX_VERSION_STRING)) {
+                return;
+            }
+        }
+#endif
         // Bank will be loaded in onAdd()
     }
 };
@@ -1800,18 +2089,36 @@ struct MinimalithWidget : ModuleWidget {
     addChild(mlCreateLabel(Vec(centerX, 54.24f), "F M  E D I T O R", 13.2f, neonGreen));
 #endif
 
-    // --- FM EDITOR trims (ALGO / EVO / IM SCAN / DRIFT) ---
+    // --- FM EDITOR trims (ALGO / EVO / IM SCAN / DRIFT / TEAR) ---
+    struct MinimalithTearSwitch : CKSS {
+        MinimalithTearSwitch() {
+            box.size = box.size.mult(0.75f);
+        }
+    };
+
     float fmTrimY = 64.60f;
-    addParam(createParamCentered<Trimpot>(mm2px(Vec(t0, fmTrimY)), module, Minimalith::ALGO_PARAM));
-    addParam(createParamCentered<Trimpot>(mm2px(Vec(t1, fmTrimY)), module, Minimalith::EVO_TRIM_PARAM));
-    addParam(createParamCentered<Trimpot>(mm2px(Vec(t2, fmTrimY)), module, Minimalith::IM_TRIM_PARAM));
-    addParam(createParamCentered<Trimpot>(mm2px(Vec(t3, fmTrimY)), module, Minimalith::DRIFT_TRIM_PARAM));
+    float fmTrimLeft = 12.00f;
+    float fmTrimRight = 69.28f;
+    float fmTrimStep = (fmTrimRight - fmTrimLeft) / 4.0f;
+    float ft0 = fmTrimLeft + fmTrimStep * 0.0f;
+    float ft1 = fmTrimLeft + fmTrimStep * 1.0f;
+    float ft2 = fmTrimLeft + fmTrimStep * 2.0f;
+    float ft3 = fmTrimLeft + fmTrimStep * 3.0f;
+    float ft4 = fmTrimLeft + fmTrimStep * 4.0f;
+    addParam(createParamCentered<Trimpot>(mm2px(Vec(ft0, fmTrimY)), module, Minimalith::ALGO_PARAM));
+    addParam(createParamCentered<Trimpot>(mm2px(Vec(ft1, fmTrimY)), module, Minimalith::EVO_TRIM_PARAM));
+    addParam(createParamCentered<Trimpot>(mm2px(Vec(ft2, fmTrimY)), module, Minimalith::IM_TRIM_PARAM));
+    addParam(createParamCentered<Trimpot>(mm2px(Vec(ft3, fmTrimY)), module, Minimalith::DRIFT_TRIM_PARAM));
+    addParam(createParamCentered<Trimpot>(mm2px(Vec(ft4, fmTrimY)), module, Minimalith::TEAR_TRIM_PARAM));
+    addParam(createParamCentered<MinimalithTearSwitch>(mm2px(Vec(ft4 + 6.0f, fmTrimY)), module, Minimalith::TEAR_FOLD_SWITCH_PARAM));
 #ifndef METAMODULE
     // Match the primary label styling (LOAD/MORPH/etc)
-    addChild(mlCreateLabel(Vec(t0, fmTrimY + 4.5f), "ALGO", 7.5f, neonGreen));
-    addChild(mlCreateLabel(Vec(t1, fmTrimY + 4.5f), "EVO", 7.5f, neonGreen));
-    addChild(mlCreateLabel(Vec(t2, fmTrimY + 4.5f), "IM SCAN", 7.5f, neonGreen));
-    addChild(mlCreateLabel(Vec(t3, fmTrimY + 4.5f), "DRIFT", 7.5f, neonGreen));
+    addChild(mlCreateLabel(Vec(ft0, fmTrimY + 4.5f), "ALGO", 7.5f, neonGreen));
+    addChild(mlCreateLabel(Vec(ft1, fmTrimY + 4.5f), "EVO", 7.5f, neonGreen));
+    addChild(mlCreateLabel(Vec(ft2, fmTrimY + 4.5f), "IM SCAN", 7.5f, neonGreen));
+    addChild(mlCreateLabel(Vec(ft3, fmTrimY + 4.5f), "DRIFT", 7.5f, neonGreen));
+    addChild(mlCreateLabel(Vec(ft4, fmTrimY + 4.5f), "TEAR", 7.5f, neonGreen));
+    addChild(mlCreateLabel(Vec(ft4 + 6.0f, fmTrimY + 4.5f), "FOLD", 6.5f, neonGreen));
 #endif
 
 
@@ -1823,21 +2130,32 @@ struct MinimalithWidget : ModuleWidget {
         addChild(mlCreateLabel(Vec(centerX, 75.86f), "C V  I N P U T S", 13.2f, neonGreen));
     #endif
 
-        // --- CV input jacks row (ALGO / EVO / IM SCAN / DRIFT / RANDOM) ---
+        // --- CV input jacks row (TEAR / ALGO / EVO / IM SCAN / DRIFT / RANDOM) ---
+        // Keep ports closer together so 6 jacks fit this row.
+        float cvPortStep = 13.5f;
+        float cvPortLeft = centerX - cvPortStep * 2.5f;
+        float cx0 = cvPortLeft + cvPortStep * 0.0f;
+        float cx1 = cvPortLeft + cvPortStep * 1.0f;
+        float cx2 = cvPortLeft + cvPortStep * 2.0f;
+        float cx3 = cvPortLeft + cvPortStep * 3.0f;
+        float cx4 = cvPortLeft + cvPortStep * 4.0f;
+        float cx5 = cvPortLeft + cvPortStep * 5.0f;
         float cvY = 88.60f;
         float cvLabelY = cvY - 4.f - 0.68f - 1.02f - 0.68f;
     #ifndef METAMODULE
-        addChild(mlCreateLabel(Vec(x0, cvLabelY), "ALGO", 7.5f, neonGreen));
-        addChild(mlCreateLabel(Vec(x1, cvLabelY), "EVO", 7.5f, neonGreen));
-        addChild(mlCreateLabel(Vec(x2, cvLabelY), "IM SCAN", 7.5f, neonGreen));
-        addChild(mlCreateLabel(Vec(x3, cvLabelY), "DRIFT", 7.5f, neonGreen));
-        addChild(mlCreateLabel(Vec(x4, cvLabelY), "RANDOM", 7.5f, neonGreen));
+        addChild(mlCreateLabel(Vec(cx0, cvLabelY), "TEAR", 7.5f, neonGreen));
+        addChild(mlCreateLabel(Vec(cx1, cvLabelY), "ALGO", 7.5f, neonGreen));
+        addChild(mlCreateLabel(Vec(cx2, cvLabelY), "EVO", 7.5f, neonGreen));
+        addChild(mlCreateLabel(Vec(cx3, cvLabelY), "IM SCAN", 7.5f, neonGreen));
+        addChild(mlCreateLabel(Vec(cx4, cvLabelY), "DRIFT", 7.5f, neonGreen));
+        addChild(mlCreateLabel(Vec(cx5, cvLabelY), "RANDOM", 7.5f, neonGreen));
     #endif
-        addInput(createInputCentered<MinimalithPort>(mm2px(Vec(x0, cvY)), module, Minimalith::CV1_INPUT));
-        addInput(createInputCentered<MinimalithPort>(mm2px(Vec(x1, cvY)), module, Minimalith::EVO_INPUT));
-        addInput(createInputCentered<MinimalithPort>(mm2px(Vec(x2, cvY)), module, Minimalith::CV2_INPUT));
-        addInput(createInputCentered<MinimalithPort>(mm2px(Vec(x3, cvY)), module, Minimalith::DRIFT_INPUT));
-        addInput(createInputCentered<MinimalithPort>(mm2px(Vec(x4, cvY)), module, Minimalith::NEXT_TRIG_INPUT));
+        addInput(createInputCentered<MinimalithPort>(mm2px(Vec(cx0, cvY)), module, Minimalith::TEAR_INPUT));
+        addInput(createInputCentered<MinimalithPort>(mm2px(Vec(cx1, cvY)), module, Minimalith::CV1_INPUT));
+        addInput(createInputCentered<MinimalithPort>(mm2px(Vec(cx2, cvY)), module, Minimalith::EVO_INPUT));
+        addInput(createInputCentered<MinimalithPort>(mm2px(Vec(cx3, cvY)), module, Minimalith::CV2_INPUT));
+        addInput(createInputCentered<MinimalithPort>(mm2px(Vec(cx4, cvY)), module, Minimalith::DRIFT_INPUT));
+        addInput(createInputCentered<MinimalithPort>(mm2px(Vec(cx5, cvY)), module, Minimalith::NEXT_TRIG_INPUT));
 
     #ifndef METAMODULE
         // --- Section title: GATE/PITCH ---
@@ -1939,11 +2257,32 @@ struct MinimalithWidget : ModuleWidget {
         ));
 
 #ifndef METAMODULE
+        menu->addChild(createMenuItem("Copy preset", "",
+            [=]() {
+                module->copyCurrentPresetToClipboard();
+            }
+        ));
+
+        menu->addChild(createMenuItem("Paste preset to current slot", "",
+            [=]() {
+                module->pasteClipboardPresetToCurrentSlot();
+            }
+        ));
+#endif
+
+        menu->addChild(createCheckMenuItem(
+            "TEAR export fallback (legacy firmware)", "",
+            [module]() { return module->exportTearLegacyFallback; },
+            [module]() { module->exportTearLegacyFallback = !module->exportTearLegacyFallback; }
+        ));
+
+#ifndef METAMODULE
         if (module->bankLoader.isLoaded() && !module->bankPath.empty()) {
             menu->addChild(new MenuSeparator);
 
             menu->addChild(createMenuItem("Save bank", "",
                 [=]() {
+                    module->bakeTearInteropForAllBankSlots();
                     module->bankLoader.saveBankInPlace();
                 }
             ));
@@ -1961,6 +2300,7 @@ struct MinimalithWidget : ModuleWidget {
                         p += ".bnk";
                     }
                     system::createDirectories(system::getDirectory(p));
+                    module->bakeTearInteropForAllBankSlots();
                     if (module->bankLoader.saveBankToPath(p)) {
                         module->bankPath = p;
                         module->bankLoader.setBankPath(p);

@@ -176,10 +176,10 @@ struct PhaseonMacroState {
 
     // Per-operator ratio offset. Affects the currently selected operator.
     // 0 = no change, -1 = detune down, +1 = detune up.
-    float opFreq[PhaseonVoice::kNumOps] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+    float opFreq[6] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
 
     // Per-operator output level trims (0..1, default 1.0)
-    float opLevelTrim[PhaseonVoice::kNumOps] = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
+    float opLevelTrim[6] = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
 
     // Bitcrush amount (0 = clean, 1 = heavy), driven by the old SPIKE knob.
     float spike       = 0.0f;
@@ -198,7 +198,7 @@ struct PhaseonMacroState {
     // 0=WT, 1=Sine, 2=Triangle, 3=Saw, 4=Harmonic Sine, 5=Skewed Sine,
     // 6=Square, 7=Warp Sine, 8=Rectified Sine
     // Stored/owned by the module/preset system; applied here at control-rate.
-    uint8_t opWaveMode[PhaseonVoice::kNumOps] = { 0, 0, 0, 0, 0, 0 };
+    uint8_t opWaveMode[6] = { 0, 0, 0, 0, 0, 0 };
 
     // SCRAMBLE: per-operator envelope diversity (0 = uniform, 1 = wildly different)
     float scramble    = 0.0f;
@@ -224,17 +224,17 @@ struct PhaseonMacroState {
     // Modulation matrix (6 slots: source â†’ destination + amount)
     PhaseonModConfig modMatrix;
     // Per-LFO controls (Surge-style), per-operator (2 LFOs × 6 ops)
-    float lfoRate[2][PhaseonVoice::kNumOps]        = { {0.5f,0.5f,0.5f,0.5f,0.5f,0.5f}, {0.5f,0.5f,0.5f,0.5f,0.5f,0.5f} };    // 0..1 mapped to Hz multiplier
-    float lfoPhaseOffset[2][PhaseonVoice::kNumOps] = { {0.0f,0.0f,0.0f,0.0f,0.0f,0.0f}, {0.0f,0.0f,0.0f,0.0f,0.0f,0.0f} };    // 0..1 phase offset
-    float lfoDeform[2][PhaseonVoice::kNumOps]      = { {0.0f,0.0f,0.0f,0.0f,0.0f,0.0f}, {0.0f,0.0f,0.0f,0.0f,0.0f,0.0f} };    // 0..1 shape morph
-    float lfoAmp[2][PhaseonVoice::kNumOps]         = { {1.0f,1.0f,1.0f,1.0f,1.0f,1.0f}, {1.0f,1.0f,1.0f,1.0f,1.0f,1.0f} };    // 0..1 amplitude
+    float lfoRate[2][6]        = { {0.5f,0.5f,0.5f,0.5f,0.5f,0.5f}, {0.5f,0.5f,0.5f,0.5f,0.5f,0.5f} };    // 0..1 mapped to Hz multiplier
+    float lfoPhaseOffset[2][6] = { {0.0f,0.0f,0.0f,0.0f,0.0f,0.0f}, {0.0f,0.0f,0.0f,0.0f,0.0f,0.0f} };    // 0..1 phase offset
+    float lfoDeform[2][6]      = { {0.0f,0.0f,0.0f,0.0f,0.0f,0.0f}, {0.0f,0.0f,0.0f,0.0f,0.0f,0.0f} };    // 0..1 shape morph
+    float lfoAmp[2][6]         = { {1.0f,1.0f,1.0f,1.0f,1.0f,1.0f}, {1.0f,1.0f,1.0f,1.0f,1.0f,1.0f} };    // 0..1 amplitude
     int   lfoTargetOp[2]                           = {-1, -1}; // -1=ALL, 0..5=specific operator
 
     // Per-operator ENV edit shapes (0..1, 0.5 = neutral)
-    float envAtkShape[PhaseonVoice::kNumOps] = {0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f};
-    float envDecShape[PhaseonVoice::kNumOps] = {0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f};
-    float envSusShape[PhaseonVoice::kNumOps] = {0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f};
-    float envRelShape[PhaseonVoice::kNumOps] = {0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f};
+    float envAtkShape[6] = {0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f};
+    float envDecShape[6] = {0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f};
+    float envSusShape[6] = {0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f};
+    float envRelShape[6] = {0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f};
 };
 
 // â”€â”€â”€ Apply macros to voice â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -448,6 +448,23 @@ inline void applyMacros(PhaseonVoice& voice, const PhaseonMacroState& m,
                 voice.ops[i].pdAmount = std::max(voice.ops[i].pdAmount, 0.85f);
                 voice.ops[i].wsMix = std::max(voice.ops[i].wsMix, 0.10f);
                 voice.ops[i].wsDrive = std::max(voice.ops[i].wsDrive, 1.25f);
+            }
+
+            // Cache a conservative mip level for this operator's current
+            // wavetable and pitch so MetaModule can skip per-sample mip
+            // selection in the audio loop.
+            {
+                const Wavetable* wt = bank.get(voice.ops[i].tableIndex);
+                if (wt && voice.ops[i].tableIndex >= 0) {
+                    float opFreq = voice.fundamentalHz * voice.ops[i].ratio;
+                    if (opFreq < 1.0f) opFreq = 1.0f;
+                    int mip = wt->pickMipLevel(opFreq, sampleRate, voice.ops[i].bandlimitBias);
+                    if (mip < 0) mip = 0;
+                    if (mip >= wt->mipCount()) mip = wt->mipCount() - 1;
+                    voice.ops[i].mipLevel = mip;
+                } else {
+                    voice.ops[i].mipLevel = 0;
+                }
             }
         }
     }

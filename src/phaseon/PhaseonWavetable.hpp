@@ -47,6 +47,49 @@ struct Wavetable {
         return sampleMip(phase01, framePos, 0);
     }
 
+        inline float sampleMipFast(float phase01, float framePos, int mipLevel) const {
+        if (frameCount <= 0) return 0.0f;
+
+#ifdef METAMODULE
+        // MetaModule: nearest-frame lookup (halves memory loads, avoids cache thrash)
+        float fFrame = framePos * (float)(frameCount - 1);
+        int frame0 = (int)(fFrame + 0.5f);
+        if (frame0 < 0) frame0 = 0;
+        if (frame0 >= frameCount) frame0 = frameCount - 1;
+
+        float fIdx = phase01 * (float)frameSize;
+        int idx0 = (int)fIdx;
+        if (idx0 >= frameSize) idx0 = frameSize - 1;
+        int idx1 = idx0 + 1;
+        if (idx1 >= frameSize) idx1 = 0;
+        float idxFrac = fIdx - (float)idx0;
+
+        const float* f0 = levelData(mipLevel) + frame0 * frameSize;
+        return f0[idx0] + (f0[idx1] - f0[idx0]) * idxFrac;
+#else
+        // VCV: full bilinear interpolation
+        float fFrame = framePos * (float)(frameCount - 1);
+        int frame0 = (int)fFrame;
+        int frame1 = frame0 + 1;
+        if (frame0 < 0) frame0 = 0;
+        if (frame1 >= frameCount) frame1 = frameCount - 1;
+        float frameFrac = fFrame - (float)frame0;
+
+        float fIdx = phase01 * (float)frameSize;
+        int idx0 = (int)fIdx;
+        if (idx0 >= frameSize) idx0 = frameSize - 1;
+        int idx1 = idx0 + 1;
+        if (idx1 >= frameSize) idx1 = 0;
+        float idxFrac = fIdx - (float)idx0;
+
+        const float* base = levelData(mipLevel);
+        const float* f0 = base + frame0 * frameSize;
+        const float* f1 = base + frame1 * frameSize;
+        float s0 = f0[idx0] + (f0[idx1] - f0[idx0]) * idxFrac;
+        float s1 = f1[idx0] + (f1[idx1] - f1[idx0]) * idxFrac;
+        return s0 + (s1 - s0) * frameFrac;
+#endif
+    }
     float sampleMip(float phase01, float framePos, int mipLevel) const {
         if (frameCount <= 0 || frameSize <= 0) return 0.0f;
 

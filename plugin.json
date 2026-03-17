@@ -1,7 +1,7 @@
 {
   "slug": "MorphWorx",
   "name": "MorphWorx",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "license": "GPL-3.0-or-later",
   "brand": "MorphWorx",
   "author": "MorphWorx",
@@ -59,6 +59,16 @@
       "tags": [
         "Drum",
         "Sampler"
+      ]
+    },
+    {
+      "slug": "Phaseon1",
+      "name": "Phaseon1",
+      "description": "Performance-first Phaseon variant: 4-op PM synth with user-loaded wavetable and formant shaper",
+      "tags": [
+        "Synth",
+        "FM",
+        "Wavetable"
       ]
     },
     {

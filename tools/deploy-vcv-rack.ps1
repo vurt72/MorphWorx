@@ -63,6 +63,53 @@ function Stop-RackIfRunning() {
 
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 
+# Refuse to deploy if there is no freshly built plugin.dll in the dist folder.
+# This script is intentionally strict to prevent stale DLL reuse after failed builds.
+$pluginJsonPath = Join-Path $repoRoot 'plugin.json'
+$defaultSlug = 'MorphWorx'
+$slug = $defaultSlug
+if (Test-Path -LiteralPath $pluginJsonPath -PathType Leaf) {
+  try {
+    $pj = Get-Content -LiteralPath $pluginJsonPath -Raw | ConvertFrom-Json
+    if ($pj.slug -and -not [string]::IsNullOrWhiteSpace([string]$pj.slug)) { $slug = [string]$pj.slug }
+  }
+  catch {
+  }
+}
+
+$distDir = Join-Path $repoRoot (Join-Path 'dist' $slug)
+$distDll = Join-Path $distDir 'plugin.dll'
+$stampPath = Join-Path $distDir '.rack_build_stamp.json'
+
+if (-not (Test-Path -LiteralPath $distDll -PathType Leaf)) {
+  throw "Refusing to deploy: $distDll not found. Run tools/build-rack.ps1 -Target dist (or build-all.ps1) first."
+}
+if (-not (Test-Path -LiteralPath $stampPath -PathType Leaf)) {
+  throw "Refusing to deploy: missing build stamp $stampPath. This prevents deploying an old DLL after a failed dist build."
+}
+
+$stamp = $null
+try {
+  $stamp = Get-Content -LiteralPath $stampPath -Raw | ConvertFrom-Json
+}
+catch {
+  throw "Refusing to deploy: build stamp is unreadable ($stampPath): $($_.Exception.Message)"
+}
+
+$dllInfo = Get-Item -LiteralPath $distDll
+$buildStart = [datetime]::Parse([string]$stamp.buildStart)
+$freshThreshold = $buildStart.AddMinutes(-1)
+if ($dllInfo.LastWriteTime -lt $freshThreshold) {
+  throw "Refusing to deploy: plugin.dll timestamp ($($dllInfo.LastWriteTime)) is too old relative to build start ($buildStart)."
+}
+
+# Hard safety: never deploy a DLL that isn't freshly built.
+# This guarantees that an old dist/plugin.dll can't be copied after a failed build.
+$age = (Get-Date) - $dllInfo.LastWriteTime
+if ($age.TotalMinutes -gt 30.0) {
+  throw "Refusing to deploy: plugin.dll is stale (LastWriteTime=$($dllInfo.LastWriteTime), age=$([math]::Round($age.TotalSeconds,1))s). Run tools/build-rack.ps1 -Target dist or tools/build-all.ps1."
+}
+
 if (-not $PluginSlug -or [string]::IsNullOrWhiteSpace($PluginSlug)) {
   $pluginJsonPath = Join-Path $repoRoot 'plugin.json'
   if (Test-Path -LiteralPath $pluginJsonPath -PathType Leaf) {
@@ -79,7 +126,7 @@ if (-not $PluginSlug -or [string]::IsNullOrWhiteSpace($PluginSlug)) {
 }
 
 if (-not $PluginSlug -or [string]::IsNullOrWhiteSpace($PluginSlug)) {
-  $PluginSlug = 'MorphWorx'
+  $PluginSlug = $slug
 }
 
 if (-not $SourceDir -or [string]::IsNullOrWhiteSpace($SourceDir)) {
@@ -105,6 +152,10 @@ Assert-DirExists $SourceDir 'Source plugin directory'
 Write-Host "Deploying VCV Rack plugin..." -ForegroundColor Cyan
 Write-Host "  From: $SourceDir"
 Write-Host "  To:   $DestDir"
+Write-Host "  plugin.dll timestamp: $($dllInfo.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss'))"
+if ($stamp.version) {
+  Write-Host "  MorphWorx version: $($stamp.version)"
+}
 
 # Prefer a clean deploy to avoid stale files, but fall back to an in-place overwrite
 # when Windows keeps handles open to the destination folder (common if Rack/plugins
@@ -150,6 +201,32 @@ if (-not (Test-Path -LiteralPath $pluginDll -PathType Leaf)) {
 }
 if (-not (Test-Path -LiteralPath $pluginJson -PathType Leaf)) {
   throw "Deploy failed: missing plugin.json in $DestDir"
+}
+
+# Ensure plugin.json in the destination matches the repo root version (for clear versioning).
+try {
+  $rootPluginJson = Join-Path $repoRoot 'plugin.json'
+  if (Test-Path -LiteralPath $rootPluginJson -PathType Leaf) {
+    Copy-Item -LiteralPath $rootPluginJson -Destination $pluginJson -Force
+  }
+}
+catch {
+  Write-Host "Warning: failed to sync plugin.json version: $($_.Exception.Message)" -ForegroundColor Yellow
+}
+
+# Ensure bundled user waveforms (for Minimalith / Phaseon1) are present inside the plugin folder.
+try {
+  $userWfSrc = Join-Path $repoRoot 'userwaveforms'
+  if (Test-Path -LiteralPath $userWfSrc -PathType Container) {
+    $userWfDest = Join-Path $DestDir 'userwaveforms'
+    if (-not (Test-Path -LiteralPath $userWfDest -PathType Container)) {
+      New-Item -ItemType Directory -Path $userWfDest | Out-Null
+    }
+    Copy-Item -Path (Join-Path $userWfSrc '*') -Destination $userWfDest -Recurse -Force
+  }
+}
+catch {
+  Write-Host "Warning: failed to copy bundled userwaveforms: $($_.Exception.Message)" -ForegroundColor Yellow
 }
 
 Write-Host "Deploy complete." -ForegroundColor Green
