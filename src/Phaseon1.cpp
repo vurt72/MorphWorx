@@ -1427,6 +1427,15 @@ struct Phaseon1 : Module {
 				return true;
 			}
 		}
+#else
+		// Rack fallback: try the preset bank bundled inside the plugin package.
+		// This auto-loads on first use without requiring the user to manually place the file.
+		{
+			std::string bundledPath = asset::plugin(pluginInstance, "userwaveforms/Phbank.bnk");
+			if (bundledPath != primaryPath && bankLoadFromPath(bundledPath)) {
+				return true;
+			}
+		}
 #endif
 		return false;
 	}
