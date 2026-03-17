@@ -16,14 +16,8 @@ extern Plugin* pluginInstance;
 
 // Declare each Model
 extern Model* modelTrigonomicon;
-extern Model* modelSlideWyrm;
 extern Model* modelSeptagon;
-extern Model* modelMinimalith;
-extern Model* modelAmenolith;
 extern Model* modelPhaseon1;
-#ifndef METAMODULE
-extern Model* modelPhaseon;
-#endif
 extern Model* modelXenostasis;
 
 #ifndef METAMODULE

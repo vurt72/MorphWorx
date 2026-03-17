@@ -11,13 +11,7 @@ void init(Plugin* p) {
 #endif
 
 	p->addModel(modelTrigonomicon);
-	p->addModel(modelSlideWyrm);
 	p->addModel(modelSeptagon);
-	p->addModel(modelMinimalith);
-	p->addModel(modelAmenolith);
 	p->addModel(modelPhaseon1);
-#ifndef METAMODULE
-	p->addModel(modelPhaseon);
-#endif
 	p->addModel(modelXenostasis);
 }

@@ -1,30 +1,21 @@
 {
     "MetaModuleBrandName": "MorphWorx",
     "MetaModuleBrandSlug": "MorphWorx",
-    "MetaModuleBrandAliases": ["MorphWorx", "IDMT"],
+    "MetaModuleBrandAliases": [
+        "MorphWorx",
+        "IDMT"
+    ],
     "MetaModulePluginMaintainer": "MorphWorx",
     "MetaModulePluginMaintainerEmail": "",
-    "MetaModuleDescription": "MorphWorx MetaModule bundle (version kept in sync with Rack plugin).",
+    "MetaModuleDescription": "MorphWorx MetaModule bundle v0.1 — Phaseon1, Trigonomicon, Septagon, Xenostasis.",
     "MetaModuleIncludedModules": [
         {
             "slug": "Trigonomicon",
             "name": "Trigonomicon"
         },
         {
-            "slug": "SlideWyrm",
-            "name": "SlideWyrm"
-        },
-        {
             "slug": "Septagon",
             "name": "Septagon"
-        },
-        {
-            "slug": "Minimalith",
-            "name": "Minimalith"
-        },
-        {
-            "slug": "Amenolith",
-            "name": "Amenolith"
         },
         {
             "slug": "Phaseon1",

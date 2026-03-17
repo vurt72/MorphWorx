@@ -1,7 +1,7 @@
 {
   "slug": "MorphWorx",
   "name": "MorphWorx",
-  "version": "2.1.0",
+  "version": "0.1.0",
   "license": "GPL-3.0-or-later",
   "brand": "MorphWorx",
   "author": "MorphWorx",
@@ -9,7 +9,7 @@
   "authorUrl": "",
   "pluginUrl": "",
   "manualUrl": "",
-  "sourceUrl": "",
+  "sourceUrl": "https://github.com/vurt72/MorphWorx",
   "donateUrl": "",
   "changelogUrl": "",
   "modules": [
@@ -19,15 +19,6 @@
       "description": "Generative drum trigger pattern generator with IDM, breakcore, amen, and drill-inspired patterns",
       "tags": [
         "Drum",
-        "Sequencer",
-        "Random"
-      ]
-    },
-    {
-      "slug": "SlideWyrm",
-      "name": "SlideWyrm",
-      "description": "TB-303 style acid pattern generator with slide and accent",
-      "tags": [
         "Sequencer",
         "Random"
       ]
@@ -44,37 +35,9 @@
       ]
     },
     {
-      "slug": "Minimalith",
-      "name": "Minimalith",
-      "description": "Minimal PreenFM2 FM synth engine - load banks, play patches, CV modulation",
-      "tags": [
-        "Synth",
-        "FM"
-      ]
-    },
-    {
-      "slug": "Amenolith",
-      "name": "Amenolith",
-      "description": "5-instrument multisample drum kit player with kits, velocity layers, roll, tune, length trim, and individual outs",
-      "tags": [
-        "Drum",
-        "Sampler"
-      ]
-    },
-    {
       "slug": "Phaseon1",
       "name": "Phaseon1",
-      "description": "Performance-first Phaseon variant: 4-op PM synth with user-loaded wavetable and formant shaper",
-      "tags": [
-        "Synth",
-        "FM",
-        "Wavetable"
-      ]
-    },
-    {
-      "slug": "Phaseon",
-      "name": "Phaseon",
-      "description": "FM + Wavetable monster voice — aggressive modern sounds with macro controls and CV performance layer",
+      "description": "Performance-first 4-op PM synth with user-loaded wavetable and formant shaper",
       "tags": [
         "Synth",
         "FM",
@@ -84,7 +47,7 @@
     {
       "slug": "Xenostasis",
       "name": "Xenostasis",
-      "description": "Autonomous hybrid synthesis organism — self-regulating spectral drone with wavetable + organic bytebeat cross-modulation and internal metabolism",
+      "description": "Autonomous hybrid synthesis organism \u2014 self-regulating spectral drone with wavetable + organic bytebeat cross-modulation",
       "tags": [
         "Synth",
         "Wavetable",

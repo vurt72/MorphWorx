@@ -60,54 +60,31 @@ add_library(MorphWorx STATIC)
 
 target_sources(MorphWorx PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/../src/plugin.cpp
+    # Trigonomicon (generative drum trigger pattern generator)
     ${CMAKE_CURRENT_LIST_DIR}/../src/DrumTrigger.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/../src/BreakcoreDrums.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/../src/SlideWyrm.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/../src/PhaseWarpedDrums.cpp
-    # Phaseon1: performance-first Phaseon variant for MetaModule
-    ${CMAKE_CURRENT_LIST_DIR}/../src/Phaseon1.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/../src/phaseon/PhaseonOperator.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/../src/phaseon/PhaseonWavetable.cpp
     ${CMAKE_CURRENT_LIST_DIR}/../src/core/MetricEngine.cpp
     ${CMAKE_CURRENT_LIST_DIR}/../src/core/EnergyField.cpp
     ${CMAKE_CURRENT_LIST_DIR}/../src/core/PhaseWarper.cpp
     ${CMAKE_CURRENT_LIST_DIR}/../src/core/TriggerExtractor.cpp
     ${CMAKE_CURRENT_LIST_DIR}/../src/core/PatternMemory.cpp
     ${CMAKE_CURRENT_LIST_DIR}/../src/dsp/LookupTables.cpp
-    # Amenolith sampler kit source
-    ${CMAKE_CURRENT_LIST_DIR}/../src/sampler/DrumKits.cpp
+    # Septagon (polyrhythmic drum pattern generator)
+    ${CMAKE_CURRENT_LIST_DIR}/../src/PhaseWarpedDrums.cpp
+    # Phaseon1: performance-first 4-op PM synth with wavetable
+    ${CMAKE_CURRENT_LIST_DIR}/../src/Phaseon1.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../src/phaseon/PhaseonOperator.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../src/phaseon/PhaseonWavetable.cpp
     # Xenostasis (autonomous hybrid synthesis organism)
     ${CMAKE_CURRENT_LIST_DIR}/../src/Xenostasis.cpp
-    # Minimalith + PreenFM2 engine
-    ${CMAKE_CURRENT_LIST_DIR}/../src/Minimalith.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/../src/pfm/PfmEngine.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/../src/pfm/PfmBankLoader.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/../src/pfm/waveforms/UserWaveforms.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/../src/pfm/synth/Voice.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/../src/pfm/synth/Timbre.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/../src/pfm/synth/Osc.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/../src/pfm/synth/Env.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/../src/pfm/synth/Matrix.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/../src/pfm/synth/Lfo.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/../src/pfm/synth/LfoOsc.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/../src/pfm/synth/LfoEnv.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/../src/pfm/synth/LfoEnv2.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/../src/pfm/synth/LfoStepSeq.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/../src/pfm/synth/Presets.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/../src/pfm/synth/Common.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/../src/pfm/synth/note_stack.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/../src/pfm/synth/event_scheduler.cpp
 )
 
 target_include_directories(MorphWorx PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/../src
-    ${CMAKE_CURRENT_LIST_DIR}/../src/pfm
-    ${CMAKE_CURRENT_LIST_DIR}/../src/pfm/synth
 )
 
 # MetaModule compile definition — used for conditional compilation
 # CVIN enables CV frequency mode in the PreenFM2 engine
-target_compile_definitions(MorphWorx PRIVATE METAMODULE=1 CVIN=1)
+target_compile_definitions(MorphWorx PRIVATE METAMODULE=1)
 
 # -ffast-math enables FMA instructions, reciprocal approximation, and float
 # reassociation on Cortex-A7 — significant CPU saving for DSP-heavy modules.

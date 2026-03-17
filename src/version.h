@@ -4,7 +4,7 @@
 // All Rack and MetaModule builds, manifests, and patch formats
 // must derive their version from these macros.
 
-#define MORPHWORX_VERSION_MAJOR 2
+#define MORPHWORX_VERSION_MAJOR 0
 #define MORPHWORX_VERSION_MINOR 1
 #define MORPHWORX_VERSION_PATCH 0
 
