@@ -37,6 +37,8 @@ DISTRIBUTABLES += userwaveforms
 # Explicitly listing the actual waveform files ensures they are included in the .vcvplugin.
 DISTRIBUTABLES += $(wildcard userwaveforms/usr*.txt)
 DISTRIBUTABLES += $(wildcard userwaveforms/USR*.BIN)
+# Phaseon1 factory preset bank — bundled so it auto-loads on first use
+DISTRIBUTABLES += userwaveforms/Phbank.bnk
 DISTRIBUTABLES += $(wildcard LICENSE*)
 
 # Include the Rack plugin makefile framework
