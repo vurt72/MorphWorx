@@ -1,6 +1,13 @@
-// SlideWyrm - Quantizer and Scale Definitions
-// Ported from Mutable Instruments Braids and Ornament & Crime
-// For TB-303 style acid pattern generation
+// SlideWyrm — Quantizer and Scale Definitions
+//
+// Scale tables ported from:
+//   Mutable Instruments Braids (https://github.com/pichenettes/eurorack)
+//     Copyright (c) 2012 Emilie Gillet.  MIT License.
+//   Ornament & Crime (https://github.com/mxmxmx/O_C)
+//     Copyright (c) 2016 Patrick Dowling, Max Stadler, Tim Churches.  MIT License.
+//
+// Full license text: see THIRD_PARTY_LICENSES.md in the repository root.
+// For TB-303 style acid pattern generation (SlideWyrm module).
 
 #pragma once
 #include <cstdint>
