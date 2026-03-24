@@ -1,0 +1,100 @@
+name: Build VCV Rack Plugin (Mac)
+
+on:
+  workflow_dispatch:
+    inputs:
+      mac_x64:
+        description: Build macOS x64 plugin
+        required: true
+        default: true
+        type: boolean
+      mac_arm64:
+        description: Build macOS arm64 plugin
+        required: true
+        default: true
+        type: boolean
+  push:
+    tags:
+      - 'v*'
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  RACK_SDK_VERSION: latest
+
+jobs:
+  build-mac-x64:
+    if: ${{ github.event_name == 'push' || inputs.mac_x64 }}
+    name: mac-x64
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build prerequisites
+        run: |
+          brew update
+          brew install jq zstd gnu-tar
+
+      - name: Configure GNU tar in PATH
+        run: |
+          echo "$(brew --prefix gnu-tar)/libexec/gnubin" >> "$GITHUB_PATH"
+
+      - name: Download Rack SDK
+        run: |
+          cd "$HOME"
+          curl -L "https://vcvrack.com/downloads/Rack-SDK-${RACK_SDK_VERSION}-mac-x64.zip" -o Rack-SDK.zip
+          unzip -q Rack-SDK.zip
+
+      - name: Build plugin
+        run: |
+          export RACK_DIR="$HOME/Rack-SDK"
+          export CROSS_COMPILE=x86_64-apple-darwin
+          make dep
+          make dist
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-x64
+          path: dist/*.vcvplugin
+
+  build-mac-arm64:
+    if: ${{ github.event_name == 'push' || inputs.mac_arm64 }}
+    name: mac-arm64
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build prerequisites
+        run: |
+          brew update
+          brew install jq zstd gnu-tar
+
+      - name: Configure GNU tar in PATH
+        run: |
+          echo "$(brew --prefix gnu-tar)/libexec/gnubin" >> "$GITHUB_PATH"
+
+      - name: Download Rack SDK
+        run: |
+          cd "$HOME"
+          curl -L "https://vcvrack.com/downloads/Rack-SDK-${RACK_SDK_VERSION}-mac-arm64.zip" -o Rack-SDK.zip
+          unzip -q Rack-SDK.zip
+
+      - name: Build plugin
+        run: |
+          export RACK_DIR="$HOME/Rack-SDK"
+          export CROSS_COMPILE=arm64-apple-darwin
+          make dep
+          make dist
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-arm64
+          path: dist/*.vcvplugin
