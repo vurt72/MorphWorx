@@ -7,10 +7,11 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
-#include <span>
 
 #ifndef METAMODULE
 #include "ui/PngPanelBackground.hpp"
+#else
+#include <span>
 #endif
 
 // ============================================================================
