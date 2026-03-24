@@ -60,8 +60,8 @@ add_library(MorphWorx STATIC)
 
 target_sources(MorphWorx PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/../src/plugin.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/../src/DrumTrigger.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/../src/BreakcoreDrums.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../src/Trigonomicon.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../src/Amenolith.cpp
     ${CMAKE_CURRENT_LIST_DIR}/../src/SlideWyrm.cpp
     ${CMAKE_CURRENT_LIST_DIR}/../src/PhaseWarpedDrums.cpp
     # Phaseon1: performance-first Phaseon variant for MetaModule

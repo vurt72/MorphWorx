@@ -5,7 +5,7 @@ RACK_DIR ?= C:/Rack-SDK
 
 # Add source files
 SOURCES += src/plugin.cpp
-SOURCES += src/DrumTrigger.cpp
+SOURCES += src/Trigonomicon.cpp
 SOURCES += src/SlideWyrm.cpp
 SOURCES += src/PhaseWarpedDrums.cpp
 SOURCES += src/core/MetricEngine.cpp
@@ -15,12 +15,11 @@ SOURCES += src/core/TriggerExtractor.cpp
 SOURCES += src/core/PatternMemory.cpp
 SOURCES += src/dsp/LookupTables.cpp
 
-# BreakcoreDrums multisample kit player
-SOURCES += src/BreakcoreDrums.cpp
+# Amenolith multisample kit player
+SOURCES += src/Amenolith.cpp
 SOURCES += src/sampler/DrumKits.cpp
 
-# Phaseon (FM + Wavetable monster voice)
-SOURCES += src/Phaseon.cpp
+# Phaseon1 (performance-first PM+wavetable voice)
 SOURCES += src/Phaseon1.cpp
 SOURCES += src/phaseon/PhaseonOperator.cpp
 SOURCES += src/phaseon/PhaseonWavetable.cpp

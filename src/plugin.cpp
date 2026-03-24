@@ -16,8 +16,5 @@ void init(Plugin* p) {
 	p->addModel(modelMinimalith);
 	p->addModel(modelAmenolith);
 	p->addModel(modelPhaseon1);
-#ifndef METAMODULE
-	p->addModel(modelPhaseon);
-#endif
 	p->addModel(modelXenostasis);
 }
