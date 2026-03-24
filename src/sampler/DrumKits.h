@@ -5,7 +5,7 @@
 namespace bdkit {
 
 static constexpr int NUM_KITS = 5;
-static constexpr int NUM_INST = 5;
+static constexpr int NUM_INST = 6;
 static constexpr int NUM_LAYERS = 3;
 
 enum Instrument : int {
@@ -14,6 +14,7 @@ enum Instrument : int {
     GSN = 2,
     CH = 3,
     OH = 4,
+    RC = 5,
 };
 
 struct Sample {

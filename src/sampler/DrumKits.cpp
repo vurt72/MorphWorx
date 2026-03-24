@@ -22,6 +22,7 @@ static int16_t g_sn[NUM_LAYERS][kFrames];
 static int16_t g_gsn[NUM_LAYERS][kFrames];
 static int16_t g_ch[NUM_LAYERS][kFrames];
 static int16_t g_oh[NUM_LAYERS][kFrames];
+static int16_t g_rc[NUM_LAYERS][kFrames];
 
 static bool g_inited = false;
 
@@ -131,6 +132,7 @@ static const char* filePrefixForInst(int inst) {
     case GSN: return "SN2";
     case CH: return "CH";
     case OH: return "OH";
+    case RC: return "ridcra";
     default: return "??";
     }
 }
@@ -220,6 +222,27 @@ static void initProceduralKits() {
             g_ch[layer][i] = (int16_t)std::lrintf(32767.f * clamp1(hp * envCH * 0.6f * vel));
             g_oh[layer][i] = (int16_t)std::lrintf(32767.f * clamp1(hp * envOH * 0.6f * vel));
         }
+
+        // RC: longer metallic cymbal/noise hybrid for ride/crash duty
+        seed = 0x13579BDFu + (uint32_t)layer * 67u;
+        float rcLp = 0.f;
+        float rcPhaseA = 0.f;
+        float rcPhaseB = 0.f;
+        float rcFreqA = 3120.f + 240.f * layer;
+        float rcFreqB = 5170.f + 330.f * layer;
+        for (uint32_t i = 0; i < kFrames; ++i) {
+            float t = (float)i / sr;
+            float envRC = std::exp(-t * (8.5f - 0.8f * layer));
+
+            float n = ((xorshift32(seed) & 0xFFFFu) / 32768.f) - 1.f;
+            rcLp += 0.012f * (n - rcLp);
+            float hp = n - rcLp;
+            float metallic = 0.6f * std::sin(rcPhaseA) + 0.4f * std::sin(rcPhaseB);
+            rcPhaseA += 2.f * 3.14159265f * rcFreqA / sr;
+            rcPhaseB += 2.f * 3.14159265f * rcFreqB / sr;
+            float s = (0.55f * hp + 0.45f * metallic) * envRC;
+            g_rc[layer][i] = (int16_t)std::lrintf(32767.f * clamp1(s * 0.55f * vel));
+        }
     }
 
     for (int k = 0; k < NUM_KITS; ++k) {
@@ -243,6 +266,10 @@ static void initProceduralKits() {
             g_kits[k][OH][l].data = g_oh[l];
             g_kits[k][OH][l].frames = kFrames;
             g_kits[k][OH][l].sampleRate = kPlaceholderSampleRate;
+
+            g_kits[k][RC][l].data = g_rc[l];
+            g_kits[k][RC][l].frames = kFrames;
+            g_kits[k][RC][l].sampleRate = kPlaceholderSampleRate;
         }
     }
 }
@@ -267,6 +294,7 @@ const char* instrumentName(int inst) {
     case GSN: return "GSN";
     case CH: return "CH";
     case OH: return "OH";
+    case RC: return "RC";
     default: return "?";
     }
 }
