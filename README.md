@@ -60,12 +60,15 @@ The **Phaseon1** preset bank (Phbank.bnk) and default wavetable (phaseon1.wav) a
 
 ### 4ms MetaModule
 1. Install MorphWorx.mmplugin via the MetaModule web UI.
-2. Download MorphWorx-phaseon1-sdcard.zip from [Releases](../../releases), extract it, and copy the phaseon1/ folder to the volume where your patch lives.
-   - sdc:/phaseon1/Phbank.bnk, sdc:/phaseon1/phaseon1.wav, sdc:/phaseon1/xs_*.wav
-   - usb:/phaseon1/Phbank.bnk, usb:/phaseon1/phaseon1.wav, usb:/phaseon1/xs_*.wav
-   - nor:/phaseon1/Phbank.bnk, nor:/phaseon1/phaseon1.wav, nor:/phaseon1/xs_*.wav
-3. Phaseon1 searches the current patch volume first, then falls back to the other local volumes.
-4. Minimalith follows the same MetaModule policy for external `.bnk` banks and `userwaveforms/` directories.
+2. Phaseon1 and Minimalith factory data now ship inside MorphWorx.mmplugin, so no separate support zip is required for the default experience.
+3. On MetaModule, both modules still prefer external files on the current patch volume first, then fall back across the other local volumes and finally the bundled plugin data.
+4. Optional external overrides can live on `sdc:/`, `usb:/`, or `nor:/` using the same paths already supported by the loaders:
+   - `phaseon1/Phbank.bnk`
+   - `phaseon1/phaseon1.wav`
+   - `minimalith/Default.bnk`
+   - `minimalith/userwaveforms/`
+   - `MorphWorx/phbank.bnk`
+   - `MorphWorx/Default.bnk`
 
 ---
 

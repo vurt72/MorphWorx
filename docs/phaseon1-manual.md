@@ -568,12 +568,13 @@ The factory preset bank (`Phbank.bnk`) and default wavetable (`phaseon1.wav`) ar
 ### 4ms MetaModule
 
 1. Install `MorphWorx.mmplugin` via the MetaModule web UI.
-2. Download `MorphWorx-phaseon1-sdcard.zip` from the Releases page, extract it, and copy the `phaseon1/` folder to the root of the volume where your patch lives.
+2. The MetaModule package now bundles the factory Phaseon1 preset bank and default wavetable, so no separate support archive is required for the default install.
+3. Phaseon1 searches the current patch volume first, then falls back to the other local volumes and finally to the bundled plugin data.
+4. Optional external overrides can still be placed on local storage.
   Valid locations include:
   - `sdc:/phaseon1/Phbank.bnk`, `sdc:/phaseon1/phaseon1.wav`, `sdc:/phaseon1/xs_*.wav`
   - `usb:/phaseon1/Phbank.bnk`, `usb:/phaseon1/phaseon1.wav`, `usb:/phaseon1/xs_*.wav`
   - `nor:/phaseon1/Phbank.bnk`, `nor:/phaseon1/phaseon1.wav`, `nor:/phaseon1/xs_*.wav`
-3. Phaseon1 searches the current patch volume first, then falls back to the other local volumes if the files are not found there.
 
 ---
 

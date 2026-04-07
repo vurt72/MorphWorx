@@ -1,6 +1,6 @@
 # publish-release.ps1
-# Creates or updates a GitHub release for the current MorphWorx version,
-# uploads the built release assets, and packages the Phaseon1 support bundle.
+# Creates or updates a GitHub release for the current MorphWorx version
+# and uploads the built Rack and MetaModule release assets.
 
 param(
     [string]$Token,
@@ -84,55 +84,6 @@ function Assert-CleanTree([switch]$allowDirty) {
 function Assert-FileExists([string]$path, [string]$description) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         throw "$description not found: $path"
-    }
-}
-
-function New-Phaseon1Bundle([string]$repoRoot, [string]$version) {
-    $outputZip = Join-Path $repoRoot (Join-Path 'dist' 'MorphWorx-phaseon1-sdcard.zip')
-    $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("MorphWorx-phaseon1-" + [System.Guid]::NewGuid().ToString('N'))
-    $bundleRoot = Join-Path $tempRoot 'phaseon1'
-    New-Item -ItemType Directory -Path $bundleRoot -Force | Out-Null
-
-    try {
-        $bankCandidates = @(
-            (Join-Path $repoRoot 'phaseon1\Phbank.bnk'),
-            (Join-Path $repoRoot 'userwaveforms\Phbank.bnk')
-        )
-        $wavetableCandidates = @(
-            (Join-Path $repoRoot 'phaseon1\phaseon1.wav'),
-            (Join-Path $repoRoot 'userwaveforms\phaseon1.wav')
-        )
-
-        $bankSource = $bankCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
-        $wavetableSource = $wavetableCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
-
-        if (-not $bankSource) {
-            throw "Could not find Phaseon1 bank source in phaseon1/Phbank.bnk or userwaveforms/Phbank.bnk"
-        }
-        if (-not $wavetableSource) {
-            throw "Could not find Phaseon1 default wavetable source in phaseon1/phaseon1.wav or userwaveforms/phaseon1.wav"
-        }
-
-        Copy-Item -LiteralPath $bankSource -Destination (Join-Path $bundleRoot 'Phbank.bnk') -Force
-        Copy-Item -LiteralPath $wavetableSource -Destination (Join-Path $bundleRoot 'phaseon1.wav') -Force
-
-        $extraTables = Get-ChildItem -LiteralPath (Join-Path $repoRoot 'userwaveforms') -Filter 'xs_*.wav' -File -ErrorAction SilentlyContinue
-        foreach ($table in $extraTables) {
-            Copy-Item -LiteralPath $table.FullName -Destination (Join-Path $bundleRoot $table.Name) -Force
-        }
-
-        if (Test-Path -LiteralPath $outputZip -PathType Leaf) {
-            Remove-Item -LiteralPath $outputZip -Force
-        }
-
-        Compress-Archive -Path $bundleRoot -DestinationPath $outputZip -CompressionLevel Optimal
-        Assert-FileExists $outputZip 'Phaseon1 support bundle'
-        return $outputZip
-    }
-    finally {
-        if (Test-Path -LiteralPath $tempRoot) {
-            Remove-Item -LiteralPath $tempRoot -Recurse -Force
-        }
     }
 }
 
@@ -234,7 +185,6 @@ Assert-ExactModuleSet -actual $metaModules -expected $expectedMetaModules -descr
 
 $rackAssetPath = Join-Path $repoRoot (Join-Path 'dist' ("MorphWorx-$version-win-x64.vcvplugin"))
 $metaModuleAssetPath = Join-Path $repoRoot (Join-Path 'metamodule\metamodule-plugins' 'MorphWorx.mmplugin')
-$phaseonBundlePath = New-Phaseon1Bundle -repoRoot $repoRoot -version $version
 
 Assert-FileExists $rackAssetPath 'Rack release artifact'
 Assert-FileExists $metaModuleAssetPath 'MetaModule release artifact'
@@ -247,7 +197,6 @@ Write-Host "  MetaModule modules: $($metaModules -join ', ')"
 Write-Host "  Notes: $NotesFile"
 Write-Host "  Rack asset: $rackAssetPath"
 Write-Host "  MetaModule asset: $metaModuleAssetPath"
-Write-Host "  Phaseon1 bundle: $phaseonBundlePath"
 
 if ($ValidateOnly) {
     Write-Host "Validation only complete. No GitHub changes were made." -ForegroundColor Yellow
@@ -288,7 +237,6 @@ Write-Host "Release URL: $($release.html_url)" -ForegroundColor Green
 if (-not $SkipAssetUpload) {
     Upload-ReleaseAsset $release $headers $rackAssetPath ([System.IO.Path]::GetFileName($rackAssetPath))
     Upload-ReleaseAsset $release $headers $metaModuleAssetPath ("MorphWorx-$version.mmplugin")
-    Upload-ReleaseAsset $release $headers $phaseonBundlePath ([System.IO.Path]::GetFileName($phaseonBundlePath))
 }
 
 Write-Host "GitHub release publish complete." -ForegroundColor Green

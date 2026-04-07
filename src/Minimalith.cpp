@@ -840,7 +840,7 @@ struct Minimalith : Module {
         for (const std::string& candidate : candidates) {
             if (tryLoadFactoryPath(candidate)) return true;
         }
-        return false;
+        return tryLoadFactoryPath(asset::plugin(pluginInstance, "def/Default.bnk"));
 #else
         loadBankAndPatch(asset::plugin(pluginInstance, "def/Default.bnk"), startupPatch);
         return bankLoader.isLoaded();
@@ -886,6 +886,7 @@ struct Minimalith : Module {
         for (const std::string& volume : searchVolumes) {
             tryVolume(volume);
         }
+        tryDir(asset::plugin(pluginInstance, "userwaveforms"));
     }
     #endif
 

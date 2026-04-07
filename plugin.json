@@ -6,12 +6,12 @@
   "brand": "MorphWorx",
   "author": "MorphWorx",
   "authorEmail": "",
-  "authorUrl": "",
-  "pluginUrl": "",
-  "manualUrl": "",
-  "sourceUrl": "",
+  "authorUrl": "https://github.com/vurt72",
+  "pluginUrl": "https://github.com/vurt72/MorphWorx",
+  "manualUrl": "https://github.com/vurt72/MorphWorx/blob/main/README.md",
+  "sourceUrl": "https://github.com/vurt72/MorphWorx",
   "donateUrl": "",
-  "changelogUrl": "",
+  "changelogUrl": "https://github.com/vurt72/MorphWorx/releases",
   "modules": [
     {
       "slug": "Trigonomicon",

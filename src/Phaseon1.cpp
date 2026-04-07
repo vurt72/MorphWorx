@@ -1697,6 +1697,12 @@ struct Phaseon1 : Module {
 				return true;
 			}
 		}
+		{
+			std::string bundledPath = asset::plugin(pluginInstance, "userwaveforms/Phbank.bnk");
+			if (bundledPath != primaryPath && bankLoadFromPath(bundledPath)) {
+				return true;
+			}
+		}
 #else
 		// Rack fallback: try the preset bank bundled inside the plugin package.
 		// This auto-loads on first use without requiring the user to manually place the file.
@@ -1997,6 +2003,10 @@ struct Phaseon1 : Module {
 				if (loadWavetableFile(candidate, &err, false)) {
 					break;
 				}
+			}
+			if (!hasWt.load(std::memory_order_acquire)) {
+				std::string bundledWtPath = asset::plugin(pluginInstance, "userwaveforms/phaseon1.wav");
+				loadWavetableFile(bundledWtPath, &err, false);
 			}
 #else
 			// On Rack, load from the plugin-bundled userwaveforms folder so it ships inside the .vcvplugin.

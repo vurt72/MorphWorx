@@ -140,9 +140,18 @@ create_plugin(
 set(MORPHWORX_MMPLUGIN_STAGE   "${CMAKE_CURRENT_BINARY_DIR}/MorphWorx")
 set(MORPHWORX_MMPLUGIN_ARCHIVE "${CMAKE_CURRENT_LIST_DIR}/metamodule-plugins/MorphWorx.mmplugin")
 
+add_custom_target(STAGE_MMPLUGIN_RUNTIME_DATA ALL
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_LIST_DIR}/../userwaveforms" "${MORPHWORX_MMPLUGIN_STAGE}/userwaveforms"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${MORPHWORX_MMPLUGIN_STAGE}/def"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_LIST_DIR}/../def/Default.bnk" "${MORPHWORX_MMPLUGIN_STAGE}/def/Default.bnk"
+    DEPENDS plugin
+    VERBATIM
+    COMMENT "Staging bundled MorphWorx runtime data for MetaModule"
+)
+
 add_custom_target(CLEANUP_MMPLUGIN_PACKAGE ALL
     COMMAND python -c "import pathlib, shutil, tarfile; stage=pathlib.Path(r'${MORPHWORX_MMPLUGIN_STAGE}'); presets=stage / 'presets'; archive=pathlib.Path(r'${MORPHWORX_MMPLUGIN_ARCHIVE}'); presets.is_dir() and not any(presets.iterdir()) and shutil.rmtree(presets); tf=tarfile.open(archive, 'w'); tf.add(stage, arcname=stage.name); tf.close()"
-    DEPENDS plugin
+    DEPENDS STAGE_MMPLUGIN_RUNTIME_DATA
     VERBATIM
     USES_TERMINAL
     COMMENT "Removing empty presets folder from MetaModule package"
