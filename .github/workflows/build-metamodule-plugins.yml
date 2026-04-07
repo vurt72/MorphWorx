@@ -42,6 +42,13 @@ jobs:
         with:
           submodules: 'recursive'
 
+      - name: Fetch MetaModule SDK
+        env:
+          SDK_BRANCH: ${{ inputs.SDK_branch }}
+        run: |
+          branch="${SDK_BRANCH:-main}"
+          git clone --depth 1 --branch "$branch" https://github.com/4ms/metamodule-plugin-sdk.git metamodule-plugin-sdk
+
       - name: Install linux dependencies
         run: |
           sudo apt-get update
