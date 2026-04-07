@@ -4,6 +4,7 @@
   "version": "2.1.0",
   "license": "GPL-3.0-or-later",
   "brand": "MorphWorx",
+  "description": "Generative drum sequencers, experimental synth voices, and FM percussion for VCV Rack and MetaModule.",
   "author": "MorphWorx",
   "authorEmail": "",
   "authorUrl": "https://github.com/vurt72",
@@ -16,7 +17,7 @@
     {
       "slug": "Trigonomicon",
       "name": "Trigonomicon",
-      "description": "Generative drum trigger pattern generator with IDM, breakcore, amen, and drill-inspired patterns",
+      "description": "Generative drum trigger sequencer for IDM, breakbeat, amen, and drill-inspired rhythms",
       "tags": [
         "Drum",
         "Sequencer",
@@ -26,7 +27,7 @@
     {
       "slug": "SlideWyrm",
       "name": "SlideWyrm",
-      "description": "TB-303 style acid pattern generator with slide and accent",
+      "description": "TB-303-inspired acid sequencer for pitch, gate, slide, and accent patterns",
       "tags": [
         "Sequencer",
         "Random"
@@ -35,7 +36,7 @@
     {
       "slug": "Septagon",
       "name": "Septagon",
-      "description": "Generative polyrhythmic drum patterns in 7/4 with phase-space warping",
+      "description": "7/4 polyrhythmic drum sequencer with phase warping and per-voice density control",
       "tags": [
         "Drum",
         "Random",
@@ -46,16 +47,16 @@
     {
       "slug": "Minimalith",
       "name": "Minimalith",
-      "description": "Minimal PreenFM2 FM synth engine - load banks, play patches, CV modulation",
+      "description": "Compact PreenFM2-derived FM synth voice with patch loading and CV modulation",
       "tags": [
-        "Synth",
-        "FM"
+        "Synth voice",
+        "Digital"
       ]
     },
     {
       "slug": "Amenolith",
       "name": "Amenolith",
-      "description": "5-instrument multisample drum kit player with kits, velocity layers, roll, tune, length trim, and individual outs",
+      "description": "Five-voice drum sampler with layered kits, roll behavior, and individual outputs",
       "tags": [
         "Drum",
         "Sampler"
@@ -64,42 +65,40 @@
     {
       "slug": "Phaseon1",
       "name": "Phaseon1",
-      "description": "Performance-first Phaseon variant: 4-op PM synth with user-loaded wavetable and formant shaper",
+      "description": "Performance-focused 4-operator phase modulation synth with user wavetables and formant shaping",
       "tags": [
-        "Synth",
-        "FM",
-        "Wavetable"
+        "Synth voice",
+        "Digital"
       ]
     },
     {
       "slug": "Xenostasis",
       "name": "Xenostasis",
-      "description": "Autonomous hybrid synthesis organism — self-regulating spectral drone with wavetable + organic bytebeat cross-modulation and internal metabolism",
+      "description": "Self-evolving drone instrument blending wavetable motion, bytebeat noise, and internal feedback",
       "tags": [
-        "Synth",
-        "Wavetable",
         "Noise",
-        "Granular"
+        "Granular",
+        "Digital"
       ]
     },
     {
       "slug": "Ferroklast",
       "name": "FERROKLAST",
-      "description": "Six-lane FM percussion synth with kick, snares, metallic hats, and chaotic IDM percussion voices",
+      "description": "Six-voice FM percussion synth for kicks, snares, metallic hats, and unstable drums",
       "tags": [
         "Drum",
-        "FM",
-        "Noise"
+        "Noise",
+        "Digital"
       ]
     },
     {
       "slug": "FerroklastMM",
       "name": "FERROKLAST MM",
-      "description": "MetaModule-focused Ferroklast variant with reduced voice set and embedded feature cuts",
+      "description": "Streamlined MetaModule edition of FERROKLAST with a reduced voice set",
       "tags": [
         "Drum",
-        "FM",
-        "Noise"
+        "Noise",
+        "Digital"
       ]
     }
   ]

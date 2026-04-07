@@ -53,8 +53,8 @@ The MetaModule build ships the same set except full FERROKLAST, which is replace
 
 ## Installation
 
-### VCV Rack 2 (Windows x64)
-Download MorphWorx-x.x.x-win-x64.vcvplugin from [Releases](../../releases) and drop it into %LOCALAPPDATA%\Rack2\plugins-win-x64\. Restart Rack.
+### VCV Rack 2
+Download the platform-specific `.vcvplugin` from [Releases](../../releases), install it in your Rack 2 plugin folder, and restart Rack.
 
 The **Phaseon1** preset bank (Phbank.bnk) and default wavetable (phaseon1.wav) are bundled inside the plugin and load automatically.
 
