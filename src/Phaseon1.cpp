@@ -40,7 +40,9 @@
 
 #ifdef METAMODULE
 #include "filesystem/async_filebrowser.hh"
+#include "filesystem/helpers.hh"
 #include "patch/patch_file.hh"
+#include "gui/notification.hh"
 #endif
 
 #include <jansson.h>
@@ -139,11 +141,6 @@ struct Phaseon1WtFormParamQuantity : ParamQuantity {
 		return kNames[idx];
 	}
 };
-
-// MetaModule default wavetable path (sdc:/phaseon1/phaseon1.wav).
-#ifdef METAMODULE
-static const char* kPhaseon1DefaultWtPath = "sdc:/phaseon1/phaseon1.wav";
-#endif
 
 static inline float clamp01(float x) {
 	return x < 0.f ? 0.f : (x > 1.f ? 1.f : x);
@@ -253,11 +250,16 @@ struct KineticLFO {
 	float cachedGravity = -1.f;  // Sentinel: force first-computation
 	float cachedG = 1.f;
 	float cachedNorm = 1.f;
+	// Cached sample-rate reciprocal — avoids per-sample float division (~25 ARM cycles → ~3).
+	float cachedSr_      = 0.f;
+	float cachedSrRecip_ = 0.f;
 
 	void reset() {
 		phase = 0.f;
 		gateWasHigh = false;
 		cachedGravity = -1.f;
+		cachedSr_      = 0.f;
+		cachedSrRecip_ = 0.f;
 	}
 
 	inline float process(float freqHz, float gravity, bool gateHigh, float sampleRate) {
@@ -266,8 +268,12 @@ struct KineticLFO {
 		}
 		gateWasHigh = gateHigh;
 
+		if (sampleRate != cachedSr_) {
+			cachedSr_      = sampleRate;
+			cachedSrRecip_ = 1.0f / sampleRate;
+		}
 		float f = std::max(0.01f, std::min(freqHz, sampleRate * 0.25f));
-		phase += f / sampleRate;
+		phase += f * cachedSrRecip_;
 		phase -= std::floor(phase);
 
 		float s = phaseon::phaseon_fast_sin_01(phase);
@@ -826,8 +832,26 @@ static phaseon::Wavetable downsampleWavetableSmall(const phaseon::Wavetable& src
 		}
 	}
 
-	// No mipmaps for Phaseon1 (keep memory and build time minimal)
-	dst.mipData.clear();
+	// Build 2 mip levels (128 and 64 samples) via 2-tap box-filter decimation.
+	// Used by bandlimited wavetable playback at elevated operator pitches.
+	{
+		constexpr int kMipLevels = 2;
+		dst.mipData.resize(kMipLevels);
+		int prevSize = kDstSize;
+		for (int level = 0; level < kMipLevels; ++level) {
+			int nextSize = prevSize / 2;
+			const std::vector<float>& prevVec = (level == 0) ? dst.data : dst.mipData[level - 1];
+			dst.mipData[level].resize((size_t)nextSize * (size_t)dst.frameCount);
+			for (int f = 0; f < dst.frameCount; ++f) {
+				const float* src = prevVec.data() + (size_t)f * (size_t)prevSize;
+				float* out = dst.mipData[level].data() + (size_t)f * (size_t)nextSize;
+				for (int s = 0; s < nextSize; ++s) {
+					out[s] = (src[s * 2] + src[s * 2 + 1]) * 0.5f;
+				}
+			}
+			prevSize = nextSize;
+		}
+	}
 	return dst;
 }
 
@@ -835,31 +859,74 @@ static phaseon::Wavetable downsampleWavetableSmall(const phaseon::Wavetable& src
 
 struct Phaseon1 : Module {
 	enum ParamId {
-		DENSITY_PARAM,
-		TIMBRE_PARAM,
-		EDGE_PARAM,
-		ALGO_PARAM,
-		CHAR_PARAM,
-		WAVE_PARAM, // edits selected operator waveform
-		FORMANT_PARAM,
-		BITCRUSH_PARAM,
+		// =====================================================================
+		// v0.2 BREAKING CHANGE: params reordered to match MetaModule panel
+		// layout (top-to-bottom, left-to-right scan). Old Phbank.bnk files
+		// saved with v1 of the bank format will have params migrated to
+		// factory defaults — preset names are preserved.
+		// =====================================================================
+
+		// Right-side utility knobs (top of panel, right column)
+		PRESET_INDEX_PARAM,
+		VOLUME_PARAM,
+		WARP_PARAM,
+
+		// Row 1 (y≈26mm): left utility column first, then main grid L→R
 		EDIT_OP_PARAM,
+		WAVE_PARAM,
+		ALGO_PARAM,
 		OP_FREQ_PARAM,
 		OP_LEVEL_PARAM,
-		ATTACK_PARAM,
-		DECAY_PARAM,
-		MOTION_PARAM,
+		CHAR_PARAM,
+
+		// Row 2 (y≈37mm)
+		SUB_PARAM,
+		DENSITY_PARAM,
 		MORPH_PARAM,
 		COMPLEX_PARAM,
-		FILTER_CUTOFF_PARAM,
-		FILTER_RESONANCE_PARAM,
-		FILTER_DRIVE_PARAM,
-		FILTER_MORPH_PARAM,
-		FILTER_ENV_PARAM,
-		PRESET_INDEX_PARAM,
-		PRESET_SAVE_PARAM,
+		MOTION_PARAM,
+		FM_ENV_AMOUNT_PARAM,
 
-		// Hidden per-operator storage (so values persist in patches/presets)
+		// Row 3 (y≈47mm)
+		TEAR_PARAM,
+		ATTACK_PARAM,
+		SYNC_ENV_PARAM,
+		FILTER_ENV_PARAM,
+		LFO_GRAVITY_PARAM,
+		FILTER_RESONANCE_PARAM,
+
+		// Row 4 (y≈58mm)
+		WT_FORM_PARAM,
+		FILTER_MORPH_PARAM,
+		COLOR_PARAM,
+		BITCRUSH_PARAM,
+		WARMTH_PARAM,
+		FILTER_DRIVE_PARAM,
+
+		// Row 5 (y≈68mm): left utility column switches first, then main grid
+		TEAR_NOISE_PARAM,
+		WT_SCROLL_MODE_PARAM,
+		TIMBRE_PARAM,
+		FORMANT_PARAM,
+		EDGE_PARAM,
+		DECAY_PARAM,
+		FILTER_CUTOFF_PARAM,
+		RANDOMIZE_BUTTON_PARAM,
+		LFO_ENABLE_PARAM,
+
+		// Row 6 (y≈78mm): modulation trimpots
+		WT_FRAME_MOD_TRIMPOT,
+		VOWEL_MOD_TRIMPOT,
+		OP1_FB_MOD_TRIMPOT,
+		DECAY_MOD_TRIMPOT,
+		CUTOFF_MOD_TRIMPOT,
+
+		// Non-visible / hidden controls
+		LFO_SYNC_DIV_PARAM,       // clock sync division (no knob; set via context menu)
+		SYNC_DIV_MOD_TRIMPOT,     // removed from panel, retained for future use
+		PRESET_SAVE_PARAM,        // momentary save button
+
+		// Hidden per-operator storage (values persist in patches/presets)
 		OP1_WAVE_STORE_PARAM,
 		OP2_WAVE_STORE_PARAM,
 		OP3_WAVE_STORE_PARAM,
@@ -873,29 +940,8 @@ struct Phaseon1 : Module {
 		OP3_LEVEL_STORE_PARAM,
 		OP4_LEVEL_STORE_PARAM,
 
-		// Dubstep PM refinement controls
-		FM_ENV_AMOUNT_PARAM,
-		WARMTH_PARAM,
-		SYNC_ENV_PARAM,
-		WARP_PARAM,
-		LFO_SYNC_DIV_PARAM,
-		LFO_GRAVITY_PARAM,
-		SYNC_DIV_MOD_TRIMPOT,
-		WT_FRAME_MOD_TRIMPOT,
-		VOWEL_MOD_TRIMPOT,
-		OP1_FB_MOD_TRIMPOT,
-		DECAY_MOD_TRIMPOT,
-		CUTOFF_MOD_TRIMPOT,
-		VOLUME_PARAM,  // Master volume: 0=silence, 0.5=unity, 1.0=+12dB
-		SUB_PARAM,     // Sub oscillator level
-		RANDOMIZE_BUTTON_PARAM,  // Momentary: generate a new voicing variant
-		RANDOMIZE_SEED_PARAM,    // Stored: seed that defines the current variant
-		TEAR_PARAM,             // Dubstep tear / phase shred (0..1)
-		TEAR_NOISE_PARAM,       // 0=LFSR noise off, 1=on
-		LFO_ENABLE_PARAM,       // LFO on/off (saved with presets)
-		COLOR_PARAM,             // Braids-style Color: spectral character macro (default 0 = off)
-		WT_SCROLL_MODE_PARAM,    // 0=Smooth, 1=Stepped WT frame scroll
-		WT_FORM_PARAM,           // 0=Off, 1=Growl, 2=Yoi, 3=Tear
+		RANDOMIZE_SEED_PARAM,    // stored seed for deterministic randomize
+
 		PARAMS_LEN
 	};
 	enum InputId {
@@ -1009,6 +1055,14 @@ struct Phaseon1 : Module {
 	bool lastRandomize = false;
 	bool presetInitDone = false;
 	int presetStartupLockSamples = 0;
+#ifdef METAMODULE
+	// Debounce PRESET_CV_INPUT on MetaModule: bankApplySlot() calls renderInternalBlock()
+	// three times plus resets all DSP state. A slowly-drifting CV jittering across a
+	// slot boundary fires this every sample without a cooldown -> CPU spikes.
+	// Allow at most one slot switch per ~0.5 s (24 000 samples at 48 kHz).
+	static constexpr uint32_t kPresetCvCooldownSamples = 24000;
+	uint32_t mmPresetCvCooldown = 0;
+#endif
 	bool pendingPresetSwitchMute = false;
 	int presetSwitchMuteSamples = 0;
 
@@ -1017,8 +1071,50 @@ struct Phaseon1 : Module {
 	std::string presetName = "Init";
 	bool bankLoaded = false;
 	std::string bankFilePath;
+	#ifdef METAMODULE
+	char mmPresetName[32] = "Init";
+	#endif
 	static bool sPresetClipboardValid;
 	static PresetSlot sPresetClipboard;
+
+	#ifdef METAMODULE
+	static void copyPresetNameToBuf(const std::string& src, char* out, size_t outSize) {
+		if (!out || outSize == 0) return;
+		if (src.empty()) {
+			snprintf(out, outSize, "%s", "Init");
+			return;
+		}
+		snprintf(out, outSize, "%.30s", src.c_str());
+	}
+
+	void syncPresetDisplayName(const std::string& src) {
+		copyPresetNameToBuf(src, mmPresetName, sizeof(mmPresetName));
+	}
+
+	void syncPresetDisplayName(const char* src) {
+		if (!src || !src[0]) {
+			snprintf(mmPresetName, sizeof(mmPresetName), "%s", "Init");
+			return;
+		}
+		snprintf(mmPresetName, sizeof(mmPresetName), "%.30s", src);
+	}
+
+	const char* activePresetNameCstr() const {
+		return mmPresetName[0] ? mmPresetName : "Init";
+	}
+	#else
+	void syncPresetDisplayName(const std::string& src) {
+		presetName = src;
+	}
+
+	void syncPresetDisplayName(const char* src) {
+		presetName = src ? src : "Init";
+	}
+
+	const char* activePresetNameCstr() const {
+		return presetName.c_str();
+	}
+	#endif
 
 	static int clampOpIndex(int v) {
 		if (v < 0) return 0;
@@ -1087,7 +1183,7 @@ struct Phaseon1 : Module {
 		// Format: "01/127 Name"
 		char buf[64];
 		snprintf(buf, sizeof(buf), "%02d/%d %s",
-			idx1, kPresetSlots, presetName.c_str());
+			idx1, kPresetSlots, activePresetNameCstr());
 		static char sBuf[64];
 		memcpy(sBuf, buf, sizeof(buf));
 		return sBuf;
@@ -1105,25 +1201,85 @@ struct Phaseon1 : Module {
 		return buf;
 	}
 
+	// Shared volume normaliser (MetaModule only).
+	// Returns an empty string for unsaved RAM-only patches so callers can decide
+	// how to fall back.
+#ifdef METAMODULE
+	static std::string normalizeVolume(std::string vol) {
+		if (vol == "ram:/" || vol == "ram:") return std::string();
+		if (!vol.empty() && vol.back() != '/') vol.push_back('/');
+		return vol;
+	}
+
+	static void appendUniqueString(std::vector<std::string>& values, const std::string& value) {
+		if (value.empty()) return;
+		for (const std::string& existing : values) {
+			if (existing == value) return;
+		}
+		values.push_back(value);
+	}
+
+	static std::vector<std::string> metaModuleVolumeSearchOrder() {
+		std::vector<std::string> volumes;
+		appendUniqueString(volumes, normalizeVolume(std::string(MetaModule::Patch::get_volume())));
+		appendUniqueString(volumes, std::string("sdc:/"));
+		appendUniqueString(volumes, std::string("usb:/"));
+		appendUniqueString(volumes, std::string("nor:/"));
+		if (volumes.empty()) {
+			volumes.push_back("sdc:/");
+		}
+		return volumes;
+	}
+
+	static std::string preferredPatchVolume() {
+		std::vector<std::string> volumes = metaModuleVolumeSearchOrder();
+		return volumes.empty() ? std::string("sdc:/") : volumes.front();
+	}
+#endif
+
 	std::string bankPath() const {
 #ifdef METAMODULE
-		auto normalizeVolume = [](std::string vol) {
-			if (vol.empty()) vol = "sdc:/";
-			if (vol == "ram:/" || vol == "ram:") vol = "sdc:/";
-			if (!vol.empty() && vol.back() != '/') vol.push_back('/');
-			return vol;
-		};
-		std::string vol = normalizeVolume(std::string(MetaModule::Patch::get_volume()));
-		return vol + "phaseon1/Phbank.bnk";
+		if (!bankFilePath.empty() && MetaModule::Filesystem::is_local_path(bankFilePath)) {
+			return bankFilePath;
+		}
+		return preferredPatchVolume() + "phaseon1/Phbank.bnk";
 #else
 		if (!bankFilePath.empty()) return bankFilePath;
 		return asset::user("MorphWorx/phaseon1/Phbank.bnk");
 #endif
 	}
 
+#ifdef METAMODULE
+	// Returns the default wavetable path on the preferred patch volume.
+	std::string defaultWtPath() const {
+		return preferredPatchVolume() + "phaseon1/phaseon1.wav";
+	}
+
+	std::string defaultWtBrowserDir() const {
+		return preferredPatchVolume() + "phaseon1/";
+	}
+#endif
+
 	void fillFactoryDefaultSlot(PresetSlot& s, const std::string& name) {
 		s.used = true;
 		s.name = name;
+		for (int p = 0; p < PARAMS_LEN; ++p) {
+			float v = params[p].getValue();
+			if (p >= 0 && p < (int)paramQuantities.size()) {
+				ParamQuantity* q = paramQuantities[p];
+				if (q) {
+					v = q->getDefaultValue();
+				}
+			}
+			if (p == PRESET_SAVE_PARAM || p == RANDOMIZE_BUTTON_PARAM) {
+				v = 0.f;
+			}
+			s.params[p] = sanitizeParamValue(p, v);
+		}
+	}
+
+	void fillFactoryDefaultSlotParams(PresetSlot& s) {
+		s.used = true;
 		for (int p = 0; p < PARAMS_LEN; ++p) {
 			float v = params[p].getValue();
 			if (p >= 0 && p < (int)paramQuantities.size()) {
@@ -1167,6 +1323,69 @@ struct Phaseon1 : Module {
 			}
 		}
 		return value;
+	}
+
+	static int migrateVersion1ParamIndex(int oldIndex) {
+		switch (oldIndex) {
+			case 0: return DENSITY_PARAM;
+			case 1: return TIMBRE_PARAM;
+			case 2: return EDGE_PARAM;
+			case 3: return ALGO_PARAM;
+			case 4: return CHAR_PARAM;
+			case 5: return WAVE_PARAM;
+			case 6: return FORMANT_PARAM;
+			case 7: return BITCRUSH_PARAM;
+			case 8: return EDIT_OP_PARAM;
+			case 9: return OP_FREQ_PARAM;
+			case 10: return OP_LEVEL_PARAM;
+			case 11: return ATTACK_PARAM;
+			case 12: return DECAY_PARAM;
+			case 13: return MOTION_PARAM;
+			case 14: return MORPH_PARAM;
+			case 15: return COMPLEX_PARAM;
+			case 16: return FILTER_CUTOFF_PARAM;
+			case 17: return FILTER_RESONANCE_PARAM;
+			case 18: return FILTER_DRIVE_PARAM;
+			case 19: return FILTER_MORPH_PARAM;
+			case 20: return FILTER_ENV_PARAM;
+			case 21: return PRESET_INDEX_PARAM;
+			case 22: return PRESET_SAVE_PARAM;
+			case 23: return OP1_WAVE_STORE_PARAM;
+			case 24: return OP2_WAVE_STORE_PARAM;
+			case 25: return OP3_WAVE_STORE_PARAM;
+			case 26: return OP4_WAVE_STORE_PARAM;
+			case 27: return OP1_FREQ_STORE_PARAM;
+			case 28: return OP2_FREQ_STORE_PARAM;
+			case 29: return OP3_FREQ_STORE_PARAM;
+			case 30: return OP4_FREQ_STORE_PARAM;
+			case 31: return OP1_LEVEL_STORE_PARAM;
+			case 32: return OP2_LEVEL_STORE_PARAM;
+			case 33: return OP3_LEVEL_STORE_PARAM;
+			case 34: return OP4_LEVEL_STORE_PARAM;
+			case 35: return FM_ENV_AMOUNT_PARAM;
+			case 36: return WARMTH_PARAM;
+			case 37: return SYNC_ENV_PARAM;
+			case 38: return WARP_PARAM;
+			case 39: return LFO_SYNC_DIV_PARAM;
+			case 40: return LFO_GRAVITY_PARAM;
+			case 41: return SYNC_DIV_MOD_TRIMPOT;
+			case 42: return WT_FRAME_MOD_TRIMPOT;
+			case 43: return VOWEL_MOD_TRIMPOT;
+			case 44: return OP1_FB_MOD_TRIMPOT;
+			case 45: return DECAY_MOD_TRIMPOT;
+			case 46: return CUTOFF_MOD_TRIMPOT;
+			case 47: return VOLUME_PARAM;
+			case 48: return SUB_PARAM;
+			case 49: return RANDOMIZE_BUTTON_PARAM;
+			case 50: return RANDOMIZE_SEED_PARAM;
+			case 51: return TEAR_PARAM;
+			case 52: return TEAR_NOISE_PARAM;
+			case 53: return LFO_ENABLE_PARAM;
+			case 54: return COLOR_PARAM;
+			case 55: return WT_SCROLL_MODE_PARAM;
+			case 56: return WT_FORM_PARAM;
+			default: return -1;
+		}
 	}
 
 	void resetDspStateOnly() {
@@ -1218,11 +1437,30 @@ struct Phaseon1 : Module {
 		presetSwitchMuteSamples = 0;
 	}
 
+	void invalidateRenderedBlock() {
+		carryL = 0.f;
+		carryR = 0.f;
+		blockL[0] = 0.f;
+		blockR[0] = 0.f;
+		for (int i = 1; i <= kBlockSize; ++i) {
+			blockL[i] = 0.f;
+			blockR[i] = 0.f;
+		}
+		readIndex = kBlockSize;
+		frac = 0.f;
+		gateEdgeFromL = 0.f;
+		gateEdgeFromR = 0.f;
+		lastPreVolL = 0.f;
+		lastPreVolR = 0.f;
+		gateEdgeXfadeRemain = 0;
+		gateEdgeXfadeTotal = 0;
+	}
+
 	void bankCaptureCurrentToSlot(int idx) {
 		if (idx < 0) idx = 0;
 		if (idx >= kPresetSlots) idx = kPresetSlots - 1;
 		PresetSlot& s = bank[idx];
-		captureCurrentToPresetSlot(s, defaultSlotName(idx));
+		captureCurrentToPresetSlot(s, s.name);
 	}
 
 	bool renameCurrentPreset(const std::string& newName) {
@@ -1249,7 +1487,7 @@ struct Phaseon1 : Module {
 		}
 
 		s.name = nm;
-		presetName = s.name;
+		syncPresetDisplayName(s.name);
 
 		return bankSave();
 	}
@@ -1310,7 +1548,7 @@ struct Phaseon1 : Module {
 		currentPreset = idx;
 		if (!s.used) {
 			PresetSlot base{};
-			fillFactoryDefaultSlot(base, initSlotName(idx));
+			fillFactoryDefaultSlotParams(base);
 			for (int p = 0; p < PARAMS_LEN; ++p) {
 				float v = sanitizeParamValue(p, base.params[p]);
 				params[p].setValue(v);
@@ -1322,14 +1560,11 @@ struct Phaseon1 : Module {
 			params[PRESET_INDEX_PARAM].setValue((float)(idx + 1));
 			resetDspStateOnly();
 			ampEnv.level = 1.0f;
-			frac = 0.f;
-			for (int flush = 0; flush < 3; ++flush) {
-				renderInternalBlock();
-			}
+			invalidateRenderedBlock();
 			pendingPresetSwitchMute = true;
 			char buf[32];
 			snprintf(buf, sizeof(buf), "Empty %02d", idx + 1);
-			presetName = buf;
+			syncPresetDisplayName(buf);
 			return;
 		}
 		for (int p = 0; p < PARAMS_LEN; ++p) {
@@ -1360,7 +1595,7 @@ struct Phaseon1 : Module {
 		params[PRESET_SAVE_PARAM].setValue(0.f);
 		params[RANDOMIZE_BUTTON_PARAM].setValue(0.f);
 		params[PRESET_INDEX_PARAM].setValue((float)(idx + 1));
-		presetName = s.name;
+		syncPresetDisplayName(s.name);
 
 		// Prevent one unstable preset from latching DSP into silent/NaN state.
 		resetDspStateOnly();
@@ -1370,21 +1605,19 @@ struct Phaseon1 : Module {
 		// hasn't attacked yet.  Normal note-triggered attacks (via gate rising edge) still
 		// start from 0 as intended.
 		ampEnv.level = 1.0f;
-		// Generate a fresh block immediately so preset browsing never replays stale audio.
-		frac = 0.f;
-		for (int flush = 0; flush < 3; ++flush) {
-			renderInternalBlock();
-		}
+		// Invalidate the cached host-rate interpolation block and let it rebuild lazily
+		// after the short preset-switch mute window instead of rendering three blocks now.
+		invalidateRenderedBlock();
 		pendingPresetSwitchMute = true;
 	}
 
 	void bankInitDefault() {
 		for (int i = 0; i < kPresetSlots; ++i) {
 			bank[i].used = false;
-			bank[i].name.clear();
+			bank[i].name = defaultSlotName(i);
 		}
 		currentPreset = 0;
-		presetName = "Init";
+		syncPresetDisplayName("Init");
 		fillFactoryDefaultSlot(bank[0], "Init");
 		bank[0].params[PRESET_INDEX_PARAM] = 1.f;
 		bankLoaded = true;
@@ -1419,19 +1652,23 @@ struct Phaseon1 : Module {
 			if (nameJ && json_is_string(nameJ)) {
 				s.name = json_string_value(nameJ);
 			}
+			// v0.2 BREAKING CHANGE: ParamId enum was reordered in v0.2 to match the
+			// MetaModule panel layout. Version 1 banks used the old enum order and
+			// must be remapped into the current ParamId layout when loaded.
+			const int bankVersion = json_is_integer(verJ) ? (int)json_integer_value(verJ) : 1;
 			json_t* paramsJ = json_object_get(slotJ, "params");
 			if (paramsJ && json_is_array(paramsJ)) {
 				int pn = (int)json_array_size(paramsJ);
-				for (int p = 0; p < PARAMS_LEN && p < pn; ++p) {
+				for (int p = 0; p < pn; ++p) {
 					json_t* vJ = json_array_get(paramsJ, p);
 					if (!vJ || !json_is_number(vJ)) continue;
 					float v = (float)json_number_value(vJ);
-					s.params[p] = sanitizeParamValue(p, v);
-				}
-				// Migration guard: force WARP off for existing banks to avoid stale values from prior parameter-index experiments.
-				s.params[WARP_PARAM] = 0.f;
-				if (s.params[LFO_SYNC_DIV_PARAM] <= 1.0001f) {
-					s.params[LFO_SYNC_DIV_PARAM] = clamp01(s.params[LFO_SYNC_DIV_PARAM]) * 11.0f;
+					int dstParam = p;
+					if (bankVersion < 2) {
+						dstParam = migrateVersion1ParamIndex(p);
+					}
+					if (dstParam < 0 || dstParam >= PARAMS_LEN) continue;
+					s.params[dstParam] = sanitizeParamValue(dstParam, v);
 				}
 			}
 		}
@@ -1446,15 +1683,15 @@ struct Phaseon1 : Module {
 			return true;
 		}
 #ifdef METAMODULE
-		static const char* kFallbackBankPaths[] = {
-			"sdc:/phaseon1/Phbank.bnk",
-			"sdc:/phaseon1/phbank.bnk",
-			"sdc:/MorphWorx/phbank.bnk",
-			"sdc:/morphworx/phbank.bnk",
-		};
-		for (const char* fallbackPath : kFallbackBankPaths) {
-			if (!fallbackPath) continue;
-			std::string candidate = fallbackPath;
+		std::vector<std::string> candidatePaths;
+		appendUniqueString(candidatePaths, primaryPath);
+		for (const std::string& volume : metaModuleVolumeSearchOrder()) {
+			appendUniqueString(candidatePaths, volume + "phaseon1/Phbank.bnk");
+			appendUniqueString(candidatePaths, volume + "phaseon1/phbank.bnk");
+			appendUniqueString(candidatePaths, volume + "MorphWorx/phbank.bnk");
+			appendUniqueString(candidatePaths, volume + "morphworx/phbank.bnk");
+		}
+		for (const std::string& candidate : candidatePaths) {
 			if (candidate == primaryPath) continue;
 			if (bankLoadFromPath(candidate)) {
 				return true;
@@ -1490,7 +1727,8 @@ struct Phaseon1 : Module {
 
 		json_t* root = json_object();
 		json_object_set_new(root, "format", json_string("MorphWorx.Phaseon1Bank"));
-		json_object_set_new(root, "version", json_integer(1));
+		// Version 2: param order matches the v0.2 panel layout (top-bottom, left-right).
+		json_object_set_new(root, "version", json_integer(2));
 		json_t* slotsJ = json_array();
 		for (int i = 0; i < kPresetSlots; ++i) {
 			PresetSlot& s = bank[i];
@@ -1726,6 +1964,7 @@ struct Phaseon1 : Module {
 		currentPreset = 0;
 		params[PRESET_INDEX_PARAM].setValue(1.f);
 		bankApplySlot(currentPreset);
+		presetStartupLockSamples = 36000;
 #else
 		// In VCV Rack, respect restored preset selection from the host/patch.
 		int idxFromKnob = (int)std::round(params[PRESET_INDEX_PARAM].getValue()) - 1;
@@ -1734,6 +1973,7 @@ struct Phaseon1 : Module {
 		currentPreset = idxFromKnob;
 		bankApplySlot(currentPreset);
 #endif
+		presetInitDone = true;
 	}
 
 	void onReset() override {
@@ -1747,11 +1987,21 @@ struct Phaseon1 : Module {
 		if (!hasWt.load(std::memory_order_acquire)) {
 			std::string err; 
 #ifdef METAMODULE
-			loadWavetableFile(kPhaseon1DefaultWtPath, &err); 
+			// Search the current patch volume first, then all other local volumes.
+			std::vector<std::string> candidateWtPaths;
+			appendUniqueString(candidateWtPaths, defaultWtPath());
+			for (const std::string& volume : metaModuleVolumeSearchOrder()) {
+				appendUniqueString(candidateWtPaths, volume + "phaseon1/phaseon1.wav");
+			}
+			for (const std::string& candidate : candidateWtPaths) {
+				if (loadWavetableFile(candidate, &err, false)) {
+					break;
+				}
+			}
 #else
 			// On Rack, load from the plugin-bundled userwaveforms folder so it ships inside the .vcvplugin.
 			std::string wtPath = asset::plugin(pluginInstance, "userwaveforms/phaseon1.wav");
-			loadWavetableFile(wtPath, &err);
+			loadWavetableFile(wtPath, &err, false);
 #endif
 		}
 	}
@@ -1871,6 +2121,8 @@ struct Phaseon1 : Module {
 		// Global Attack/Decay (CPU-friendly)
 		float attackBase = cvSum(clamp01(params[ATTACK_PARAM].getValue()),   ATTACK_CV_INPUT);
 		float decayBase  = cvSum(clamp01(params[DECAY_PARAM].getValue()),    DECAY_CV_INPUT);
+		// atk is block-constant (attackBase not LFO-modulated); hoisted from inner loop.
+		const float atk = 0.0010f + (attackBase * attackBase) * 0.2490f;
 
 		float formAmt = cvSum(clamp01(params[FORMANT_PARAM].getValue()),     FORMANT_CV_INPUT);
 
@@ -2281,6 +2533,12 @@ struct Phaseon1 : Module {
 			if (tearDelayLen > kTearDelaySize - 1) tearDelayLen = kTearDelaySize - 1;
 		}
 
+		// Snapshot block-stable warp/table indices for all operators once per block.
+		// tick() reads blockWarpMode/blockTableIndex so the per-sample switch dispatch
+		// never re-reads volatile struct fields or chases memory on every sample.
+		for (int oi = 0; oi < 4; ++oi)
+			ops[oi].prepareBlock();
+
 		const bool lfoEnabled = params[LFO_ENABLE_PARAM].getValue() > 0.5f;
 		if (!lfoEnabled) lastLfoValue = 0.f;
 		for (int i = 1; i <= kBlockSize; ++i) {
@@ -2318,7 +2576,6 @@ struct Phaseon1 : Module {
 			float finalCutoff = applyMod01(cutoffBase, lfoOut, cutoffModTrim);
 
 			float decayNow = applyMod01(decayBase, lfoOut, decayModTrim);
-			float atk = 0.0010f + (attackBase * attackBase) * 0.2490f;
 			float dec = 0.0050f + (decayNow * decayNow) * 2.4950f;
 			ampEnv.setTimes(atk, dec, dt);
 
@@ -2342,9 +2599,8 @@ struct Phaseon1 : Module {
 					ops[oi].phaseWarp = finalWarp * (1.0f + wtFormBoost * tearBoost * (0.18f * complexAmt + 0.08f * colorAmt));
 					ops[oi].tear = clamp01(tearWet1 + wtFormBoost * tearBoost * (0.22f + 0.36f * complexAmt + 0.08f * colorAmt));
 				}
-				else {
-					ops[oi].phaseWarp = finalWarp;
-				}
+				// wtFormMode == 0: phaseWarp already set to warpMapped in block preamble;
+				// no per-sample write needed, preserving Operator::tick() warp cache.
 				if (wtScrollStepped && ops[oi].tableIndex == 0) {
 					int steps = 16;
 					if (tablePtr && tablePtr->frameCount > 1) steps = tablePtr->frameCount;
@@ -2355,11 +2611,7 @@ struct Phaseon1 : Module {
 				}
 				ops[oi].framePos = fp;
 			}
-			// Keep base feedback on most operators, but drive modulated feedback
-			// into Op4 so it cascades through the FM algorithms more audibly.
-			ops[0].feedback = fb;
-			ops[1].feedback = fb;
-			ops[2].feedback = fb;
+			// Ops 0–2: feedback is block-constant (set in preamble); op 3 is LFO-modulated.
 			ops[3].feedback = fbNow;
 
 			// Update filter coefficients every small sub-block to track envelope changes
@@ -2901,29 +3153,16 @@ struct Phaseon1 : Module {
 
 	void process(const ProcessArgs& args) override {
 		if (!presetInitDone) {
-			bankEnsureLoaded();
-	#ifdef METAMODULE
-			// MetaModule: force deterministic slot-01 startup and briefly lock.
-			currentPreset = 0;
-			params[PRESET_INDEX_PARAM].setValue(1.f);
-			bankApplySlot(0);
-			presetStartupLockSamples = (int)(std::max(1.f, args.sampleRate) * 0.75f);
-			if (presetStartupLockSamples < 1) presetStartupLockSamples = 1;
-	#else
-			// VCV Rack: honor restored preset index/state.
-			int idxFromKnob = (int)std::round(params[PRESET_INDEX_PARAM].getValue()) - 1;
-			if (idxFromKnob < 0) idxFromKnob = 0;
-			if (idxFromKnob >= kPresetSlots) idxFromKnob = kPresetSlots - 1;
-			currentPreset = idxFromKnob;
-			bankApplySlot(currentPreset);
-			presetStartupLockSamples = 0;
-	#endif
 			presetInitDone = true;
 		}
 
 		if (!bankLoaded) {
-			bankEnsureLoaded();
-			bankApplySlot(currentPreset);
+			outputs[LEFT_OUTPUT].setVoltage(0.f);
+			outputs[RIGHT_OUTPUT].setVoltage(0.f);
+			outputs[LFO_OUTPUT].setVoltage(0.f);
+			outputs[ENV_OUTPUT].setVoltage(0.f);
+			lights[GATE_LIGHT].setBrightness(0.f);
+			return;
 		}
 
  		// Preset index + save
@@ -2932,6 +3171,9 @@ struct Phaseon1 : Module {
 				params[PRESET_INDEX_PARAM].setValue((float)(currentPreset + 1));
 				presetStartupLockSamples--;
 			} else {
+#ifdef METAMODULE
+				if (mmPresetCvCooldown > 0) --mmPresetCvCooldown;
+#endif
 				int idxFromKnob = (int)std::round(params[PRESET_INDEX_PARAM].getValue()) - 1;
 				if (inputs[PRESET_CV_INPUT].isConnected()) {
 					float cv = clamp(inputs[PRESET_CV_INPUT].getVoltage(), 0.f, 10.f);
@@ -2940,14 +3182,26 @@ struct Phaseon1 : Module {
 				if (idxFromKnob < 0) idxFromKnob = 0;
 				if (idxFromKnob >= kPresetSlots) idxFromKnob = kPresetSlots - 1;
 				if (idxFromKnob != currentPreset) {
+#ifdef METAMODULE
+					// Guard: bankApplySlot() is expensive (3x block render + full DSP reset).
+					// A jittering CV at a slot boundary would spam it every sample.
+					if (mmPresetCvCooldown == 0) {
+						bankApplySlot(idxFromKnob);
+						mmPresetCvCooldown = kPresetCvCooldownSamples;
+					}
+#else
 					bankApplySlot(idxFromKnob);
+#endif
 				}
 			}
 			bool save = params[PRESET_SAVE_PARAM].getValue() > 0.5f;
 			if (save && !lastPresetSave) {
 				bankCaptureCurrentToSlot(currentPreset);
+#ifndef METAMODULE
+				// On MetaModule the audio thread must never perform disk I/O.
+				// The bank is persisted via dataToJson() when the firmware saves the patch.
 				bankSave();
-#ifdef METAMODULE
+#else
 				MetaModule::Patch::mark_patch_modified();
 #endif
 			}
@@ -3005,41 +3259,45 @@ struct Phaseon1 : Module {
 			presetSwitchMuteSamples = (int)(hostRate * 0.020f); // ~20 ms hard flush
 			if (presetSwitchMuteSamples < 1) presetSwitchMuteSamples = 1;
 		}
-		float step = kInternalRate / hostRate;
-		if (step < 0.0001f) step = 0.0001f;
-		if (step > 4.0f) step = 4.0f;
+		float outL = 0.f;
+		float outR = 0.f;
+		if (presetSwitchMuteSamples <= 0) {
+			float step = kInternalRate / hostRate;
+			if (step < 0.0001f) step = 0.0001f;
+			if (step > 4.0f) step = 4.0f;
 
-		// Ensure we have a block ready.
-		if (readIndex >= kBlockSize) {
-			renderInternalBlock();
-		}
-
-		// Linear interpolation between block[readIndex] and block[readIndex+1]
-		float aL = blockL[readIndex];
-		float bL = blockL[readIndex + 1];
-		float aR = blockR[readIndex];
-		float bR = blockR[readIndex + 1];
-		float outL = aL + (bL - aL) * frac;
-		float outR = aR + (bR - aR) * frac;
-
-		// Tiny gate-edge crossfade to suppress clicks without audible envelope lag.
-		if (gateEdgeXfadeRemain > 0 && gateEdgeXfadeTotal > 0) {
-			float t = 1.f - ((float)gateEdgeXfadeRemain / (float)gateEdgeXfadeTotal);
-			if (t < 0.f) t = 0.f;
-			if (t > 1.f) t = 1.f;
-			outL = lerp(gateEdgeFromL, outL, t);
-			outR = lerp(gateEdgeFromR, outR, t);
-			gateEdgeXfadeRemain--;
-		}
-		lastPreVolL = outL;
-		lastPreVolR = outR;
-
-		frac += step;
-		while (frac >= 1.f) {
-			frac -= 1.f;
-			readIndex++;
+			// Ensure we have a block ready.
 			if (readIndex >= kBlockSize) {
 				renderInternalBlock();
+			}
+
+			// Linear interpolation between block[readIndex] and block[readIndex+1]
+			float aL = blockL[readIndex];
+			float bL = blockL[readIndex + 1];
+			float aR = blockR[readIndex];
+			float bR = blockR[readIndex + 1];
+			outL = aL + (bL - aL) * frac;
+			outR = aR + (bR - aR) * frac;
+
+			// Tiny gate-edge crossfade to suppress clicks without audible envelope lag.
+			if (gateEdgeXfadeRemain > 0 && gateEdgeXfadeTotal > 0) {
+				float t = 1.f - ((float)gateEdgeXfadeRemain / (float)gateEdgeXfadeTotal);
+				if (t < 0.f) t = 0.f;
+				if (t > 1.f) t = 1.f;
+				outL = lerp(gateEdgeFromL, outL, t);
+				outR = lerp(gateEdgeFromR, outR, t);
+				gateEdgeXfadeRemain--;
+			}
+			lastPreVolL = outL;
+			lastPreVolR = outR;
+
+			frac += step;
+			while (frac >= 1.f) {
+				frac -= 1.f;
+				readIndex++;
+				if (readIndex >= kBlockSize) {
+					renderInternalBlock();
+				}
 			}
 		}
 
@@ -3049,6 +3307,7 @@ struct Phaseon1 : Module {
 		if (presetSwitchMuteSamples > 0) {
 			outL = 0.f;
 			outR = 0.f;
+			lastLfoValue = 0.f;
 			presetSwitchMuteSamples--;
 		}
 		// Gentle output guard to reduce harsh clipping while preserving dynamics.
@@ -3061,17 +3320,23 @@ struct Phaseon1 : Module {
 		outputs[ENV_OUTPUT].setVoltage(filter.getEnvFollower() * 10.f);
 	}
 
-	bool loadWavetableFile(const std::string& path, std::string* err) {
+	bool loadWavetableFile(const std::string& path, std::string* err, bool notifyOnSuccess = true) {
 		phaseon::WavetableBank tmp;
 		int idx = tmp.loadFromWav(path, 2048);
 		if (idx < 0 || idx >= tmp.count()) {
 			if (err) *err = "Failed to load WAV";
+#ifdef METAMODULE
+			MetaModule::Gui::notify_user("Phaseon1: WT load failed", 3000);
+#endif
 			return false;
 		}
 
 		phaseon::Wavetable small = downsampleWavetableSmall(tmp.tables[(size_t)idx]);
 		if (small.frameSize <= 0 || small.frameCount <= 0 || small.data.empty()) {
 			if (err) *err = "Invalid wavetable";
+#ifdef METAMODULE
+			MetaModule::Gui::notify_user("Phaseon1: WT invalid", 3000);
+#endif
 			return false;
 		}
 
@@ -3082,6 +3347,16 @@ struct Phaseon1 : Module {
 		wtName = wtBuf[inactive].name;
 		hasWt.store(true, std::memory_order_release);
 		wtActive.store(inactive, std::memory_order_release);
+#ifdef METAMODULE
+		// Notify - wtName is a std::string member; build message in a local char buf
+		// to avoid any dynamic allocation in the notification path.
+		if (notifyOnSuccess) {
+			char notifBuf[48];
+			const char* nm = wtName.empty() ? "(unnamed)" : wtName.c_str();
+			snprintf(notifBuf, sizeof(notifBuf), "WT loaded: %.36s", nm);
+			MetaModule::Gui::notify_user(std::string_view{notifBuf, strlen(notifBuf)}, 2000);
+		}
+#endif
 		return true;
 	}
 
@@ -3107,15 +3382,15 @@ struct Phaseon1Widget : ModuleWidget {
 	#ifdef METAMODULE
 		setPanel(createPanel(asset::plugin(pluginInstance, "res/Phaseon1.png")));
 	#else
-		setPanel(createPanel(asset::plugin(pluginInstance, "res/Phaseon.svg")));
+		// VCV Rack: no SVG; hardcode 20HP and use PNG directly.
+		box.size = Vec(RACK_GRID_WIDTH * 20, RACK_GRID_HEIGHT);
+		{
+			auto* panelBg = new bem::PngPanelBackground(asset::plugin(pluginInstance, "res/Phaseon1.png"));
+			panelBg->box.pos = Vec(0, 0);
+			panelBg->box.size = box.size;
+			addChild(panelBg);
+		}
 	#endif
-
-#ifndef METAMODULE
-		auto* panelBg = new bem::PngPanelBackground(asset::plugin(pluginInstance, "res/Phaseon1.png"));
-		panelBg->box.pos = Vec(0, 0);
-		panelBg->box.size = box.size;
-		addChild(panelBg);
-#endif
 
 #ifndef METAMODULE
 		struct Phaseon1PortWidget : MVXPort {
@@ -3134,7 +3409,7 @@ struct Phaseon1Widget : ModuleWidget {
 		using Phaseon1PortWidget = MVXPort;
 		using Phaseon1OutPortWidget = MVXPort;
 #endif
-		struct Phaseon1MainKnob : MVXKnob_grey {
+		struct Phaseon1MainKnob : MVXKnob_c {
 			Phaseon1MainKnob() {
 				box.size = box.size.mult(0.85f);
 			}
@@ -3167,7 +3442,7 @@ struct Phaseon1Widget : ModuleWidget {
 				this->box.size = Vec(ref.box.size.x * 1.152f, ref.box.size.y * 1.152f);
 			}
 		};
-		struct Phaseon1TearKnob : MVXKnob_grey {
+		struct Phaseon1TearKnob : MVXKnob_c {
 			Phaseon1TearKnob() {
 				// Phaseon1: use the white knob art for TEAR.
 				// MetaModule doesn't render custom PNG knobs.
@@ -3400,12 +3675,14 @@ struct Phaseon1Widget : ModuleWidget {
 #endif
 		}
 
-		const Vec utilityLabelOffset = Vec(0.f, -19.f);
 		const Vec editPos = mm2px(Vec(mcol1 - colSpacing * 1.02f, macroY + 0.5f)).plus(macroShiftPx).plus(Vec(0.f, -4.f));
 		const Vec subPos = mm2px(Vec(mcol1 - colSpacing * 1.02f, macroY + kRowSpacing + 0.5f)).plus(macroShiftPx).plus(Vec(0.f, -4.f)).plus(Vec(0.f, 12.f));
 		const Vec tearBase = mm2px(Vec(mcol1 - colSpacing * 1.02f, tearWarpKnobY)).plus(macroShiftPx).plus(Vec(0.f, -4.f)).plus(Vec(0.f, 12.f)).plus(Vec(0.f, 14.f));
 		const float utilityStepY = tearBase.y - subPos.y;
 		const Vec wtFormPos = tearBase.plus(Vec(0.f, utilityStepY));
+#ifndef METAMODULE
+		const Vec utilityLabelOffset = Vec(0.f, -19.f);
+#endif
 
 		// EDIT knob above WAVE (mcol1), red accent knob.
 		addParam(createParamCentered<Phaseon1EditKnob>(editPos, module, Phaseon1::EDIT_OP_PARAM));
@@ -3819,7 +4096,8 @@ struct Phaseon1Widget : ModuleWidget {
 
 #ifdef METAMODULE
 				// MetaModule: async file browser (runs in GUI context)
-				async_open_file("sdc:/phaseon1/", "wav,WAV", "Load wavetable",
+				std::string startDir = module->defaultWtBrowserDir();
+				async_open_file(startDir.c_str(), "wav,WAV", "Load wavetable",
 					[module = module](char* path) {
 						if (path) {
 							std::string err;

@@ -13,14 +13,14 @@ struct PhaseWarpedDrums : Module {
     enum ParamIds {
         CHAOS_PARAM,
         DENSITY_PARAM,
-        EVOLUTION_PARAM,
         SWING_PARAM,
         TENSION_PARAM,
-        GENERATE_BUTTON,
+        EVOLUTION_PARAM,
         GROUPING_SELECT,
-        AUTO_REGEN_PARAM,
-        PATTERN_BARS,
+        GENERATE_BUTTON,
         TIME_MODE_PARAM,
+        PATTERN_BARS,
+        AUTO_REGEN_PARAM,
         NUM_PARAMS
     };
 
@@ -52,6 +52,7 @@ struct PhaseWarpedDrums : Module {
         GROUP_GATE_1,
         GROUP_GATE_2,
         GROUP_GATE_3,
+        FILL_GATE,
         NUM_OUTPUTS
     };
 
@@ -122,6 +123,7 @@ private:
     pwmt::TriggerBuffer ghostTriggers_;
     pwmt::TriggerBuffer chatTriggers_;
     pwmt::TriggerBuffer ohatTriggers_;
+    pwmt::TriggerBuffer fillTriggers_;
 
     // Pre-allocated scratch EnergyFields for per-bar generation
     pwmt::EnergyField scratchKick_;
@@ -131,7 +133,6 @@ private:
     pwmt::TriggerBuffer scratchTrigBuf_;
 
     float barPhase_ = 0.0f;
-    float tempo_ = 120.0f;
     bool useExternalClock_ = false;
     bool hasGeneratedInitialPattern_ = false;
     int barCounter_ = 0;
@@ -150,12 +151,16 @@ private:
     TriggerState ghostState_;
     TriggerState chatState_;
     TriggerState ohatState_;
+    TriggerState fillState_;
+
+    static constexpr float FILL_GATE_DURATION = 0.08f;
 
     float kickGateV_ = 0.0f, kickVelV_ = 0.0f;
     float snareGateV_ = 0.0f, snareVelV_ = 0.0f;
     float ghostGateV_ = 0.0f, ghostVelV_ = 0.0f;
     float chatGateV_ = 0.0f, chatVelV_ = 0.0f;
     float ohatGateV_ = 0.0f, ohatVelV_ = 0.0f;
+    float fillGateV_ = 0.0f;
     float groupGateV_[3] = {0.0f, 0.0f, 0.0f};
 
     dsp::ExponentialFilter chaosFilter_;
@@ -169,15 +174,19 @@ private:
     dsp::SchmittTrigger clockTrigger_;
 
     void updatePhase(float sampleTime);
-    void processTriggers(float sampleTime);
+    void processTriggers(float sampleTime, float prevPhase, float phaseAdvance, bool wrapped);
     void updateOutputs();
     void updateLights(float sampleTime);
     float getEffectiveParam(int paramId, int cvId, float scale = 1.0f);
     std::pair<float, float> processTriggerState(TriggerState& state,
                                                 const pwmt::TriggerBuffer& triggers,
+                                                float prevPhase,
                                                 float currentPhase,
-                                                float sampleTime);
-    void updateGroupGates();
+                                                float phaseAdvance,
+                                                bool wrapped,
+                                                float sampleTime,
+                                                float gateDuration = TriggerState::GATE_DURATION);
+    void updateGroupGates(float phaseAdvance);
 };
 
 extern Model* modelSeptagon;

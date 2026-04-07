@@ -14,7 +14,9 @@ public:
         while (index < 0.0f) index += SIZE;
         while (index >= SIZE) index -= SIZE;
         int i0 = static_cast<int>(index);
-        int i1 = (i0 + 1 < SIZE) ? i0 + 1 : 0;
+        // Bitmask wrap: SIZE is always a power-of-2, so this replaces a branch
+        // with a single AND — avoids a pipeline stall on ARM M7.
+        int i1 = (i0 + 1) & (SIZE - 1);
         float frac = index - i0;
         return data_[i0] + frac * (data_[i1] - data_[i0]);
     }

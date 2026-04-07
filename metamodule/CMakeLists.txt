@@ -62,6 +62,7 @@ target_sources(MorphWorx PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/../src/plugin.cpp
     ${CMAKE_CURRENT_LIST_DIR}/../src/Trigonomicon.cpp
     ${CMAKE_CURRENT_LIST_DIR}/../src/Amenolith.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../src/Ferroklast.cpp
     ${CMAKE_CURRENT_LIST_DIR}/../src/SlideWyrm.cpp
     ${CMAKE_CURRENT_LIST_DIR}/../src/PhaseWarpedDrums.cpp
     # Phaseon1: performance-first Phaseon variant for MetaModule
@@ -134,6 +135,17 @@ create_plugin(
     PLUGIN_JSON   ${MORPHWORX_PLUGIN_JSON}
     SOURCE_ASSETS ${CMAKE_CURRENT_LIST_DIR}/assets
     DESTINATION   ${CMAKE_CURRENT_LIST_DIR}/metamodule-plugins
+)
+
+set(MORPHWORX_MMPLUGIN_STAGE   "${CMAKE_CURRENT_BINARY_DIR}/MorphWorx")
+set(MORPHWORX_MMPLUGIN_ARCHIVE "${CMAKE_CURRENT_LIST_DIR}/metamodule-plugins/MorphWorx.mmplugin")
+
+add_custom_target(CLEANUP_MMPLUGIN_PACKAGE ALL
+    COMMAND python -c "import pathlib, shutil, tarfile; stage=pathlib.Path(r'${MORPHWORX_MMPLUGIN_STAGE}'); presets=stage / 'presets'; archive=pathlib.Path(r'${MORPHWORX_MMPLUGIN_ARCHIVE}'); presets.is_dir() and not any(presets.iterdir()) and shutil.rmtree(presets); tf=tarfile.open(archive, 'w'); tf.add(stage, arcname=stage.name); tf.close()"
+    DEPENDS plugin
+    VERBATIM
+    USES_TERMINAL
+    COMMENT "Removing empty presets folder from MetaModule package"
 )
 
 # Always validate plugin-mm.json using Python (works on Windows without MSYS2/jq).

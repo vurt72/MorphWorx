@@ -22,6 +22,8 @@ extern Model* modelMinimalith;
 extern Model* modelAmenolith;
 extern Model* modelPhaseon1;
 extern Model* modelXenostasis;
+extern Model* modelFerroklast;
+extern Model* modelFerroklastMM;
 
 #ifndef METAMODULE
 struct MVXPort : app::PortWidget {
@@ -197,11 +199,11 @@ struct MVXKnob_red : MVXKnob {
 };
 
 // Grey variant of MVXKnob — used for the TEAR knob.
-// Uses MVXKnob_grey.png (turning part) and MVXKnob_grey_BG.png (background).
-struct MVXKnob_grey : MVXKnob {
-	MVXKnob_grey() {
-		bgPath = asset::plugin(pluginInstance, "res/knobs/MVXKnob_grey_BG.png");
-		fgPath = asset::plugin(pluginInstance, "res/knobs/MVXKnob_grey.png");
+// Uses MVXKnob_c.png (turning part) and MVXKnob_c_bg.png (background).
+struct MVXKnob_c : MVXKnob {
+	MVXKnob_c() {
+		bgPath = asset::plugin(pluginInstance, "res/knobs/MVXKnob_c_bg.png");
+		fgPath = asset::plugin(pluginInstance, "res/knobs/MVXKnob_c.png");
 		// Invalidate cached handles so the new paths are loaded.
 		bgHandle = -1;
 		fgHandle = -1;
@@ -211,10 +213,65 @@ struct MVXKnob_grey : MVXKnob {
 	}
 };
 
+// Blue variant of MVXKnob — used for reverb parameters.
+// Uses MVXKnob_blue.png (turning part) and MVXKnob_blue_BG.png (background).
+struct MVXKnob_blue : MVXKnob {
+	MVXKnob_blue() {
+		bgPath = asset::plugin(pluginInstance, "res/knobs/MVXKnob_blue_BG.png");
+		fgPath = asset::plugin(pluginInstance, "res/knobs/MVXKnob_blue.png");
+		bgHandle = -1;
+		fgHandle = -1;
+		componentlibrary::RoundSmallBlackKnob ref;
+		box.size = ref.box.size.mult(1.44f);
+	}
+};
+
+// White variant of MVXKnob — used for snap/body/material/noise/chaos parameters.
+// Uses MVXKnob_wh.png (turning part) and MVXKnob_wh_BG.png (background).
+struct MVXKnob_wh : MVXKnob {
+	MVXKnob_wh() {
+		bgPath = asset::plugin(pluginInstance, "res/knobs/MVXKnob_wh_BG.png");
+		fgPath = asset::plugin(pluginInstance, "res/knobs/MVXKnob_wh.png");
+		bgHandle = -1;
+		fgHandle = -1;
+		componentlibrary::RoundSmallBlackKnob ref;
+		box.size = ref.box.size.mult(1.44f);
+	}
+};
+
+// Silver output port variant.
+struct MVXport_silver : MVXPort {
+	MVXport_silver() {
+		imagePath = asset::plugin(pluginInstance, "res/ports/MVXport_silver.png");
+		imageHandle = -1;
+	}
+};
+
+// Silver+red output port variant.
+struct MVXport_silver_red : MVXPort {
+	MVXport_silver_red() {
+		imagePath = asset::plugin(pluginInstance, "res/ports/MVXport_silver_red.png");
+		imageHandle = -1;
+	}
+};
+
+// Red input port variant (s1 style).
+struct MVXport_s1_red : MVXPort {
+	MVXport_s1_red() {
+		imagePath = asset::plugin(pluginInstance, "res/ports/MVXport_s1_red.png");
+		imageHandle = -1;
+	}
+};
+
 #else
-using MVXPort      = componentlibrary::PJ301MPort;
+using MVXPort         = componentlibrary::PJ301MPort;
 // MetaModule doesn't render custom PNG knobs; fall back to standard knob widgets.
-using MVXKnob      = componentlibrary::RoundSmallBlackKnob;
-using MVXKnob_red  = componentlibrary::RoundSmallBlackKnob;
-using MVXKnob_grey = componentlibrary::RoundSmallBlackKnob;
+using MVXKnob         = componentlibrary::RoundSmallBlackKnob;
+using MVXKnob_red     = componentlibrary::RoundSmallBlackKnob;
+using MVXKnob_c       = componentlibrary::RoundSmallBlackKnob;
+using MVXKnob_blue    = componentlibrary::RoundSmallBlackKnob;
+using MVXKnob_wh      = componentlibrary::RoundSmallBlackKnob;
+using MVXport_silver      = componentlibrary::PJ301MPort;
+using MVXport_silver_red  = componentlibrary::PJ301MPort;
+using MVXport_s1_red      = componentlibrary::PJ301MPort;
 #endif

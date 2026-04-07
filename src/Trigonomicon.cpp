@@ -48,6 +48,9 @@ static const int BASS_WILD_WINDOW_CLOCKS = BASS_CYCLE_CLOCKS / 2;
 static const float BASS_GLIDE_SECONDS = 0.012f;
 static const float BASS_BASE_VOLTAGE = -1.f;
 static const float BASS_TRIGGER_SECONDS = 0.008f;  // 8ms — long enough for Minimalith and other envelope-based synths
+static const float DRUM_TRIGGER_SECONDS = 0.005f;
+static const float KICK_TRIGGER_SECONDS = 0.012f;  // Longer and immediate for hardware drum modules that miss short kick pulses
+static const float OPEN_HAT_TRIGGER_SECONDS = 0.10f;
 
 // Fast exp approximation (file-local; same formulation as SlideWyrm.cpp)
 static inline float fastExp2Approx(float x) {
@@ -270,31 +273,63 @@ static bool isBarAnchorStep(int step, int numSteps) {
 	return false;
 }
 
+struct SnareAnchorTarget {
+	int step16;
+	float weight;
+};
+
+static int getFamilySnareAnchorTargets(GrooveFamily family, const SnareAnchorTarget*& targets) {
+	static const SnareAnchorTarget amenTargets[] = {
+		{2, 0.90f},
+		{6, 1.00f},
+		{10, 0.90f},
+		{14, 1.00f},
+	};
+	static const SnareAnchorTarget jungleTargets[] = {
+		{4, 1.00f},
+		{9, 0.62f},
+		{12, 0.92f},
+		{13, 0.70f},
+	};
+
+	switch (family) {
+		case GROOVE_AMEN:
+			targets = amenTargets;
+			return 4;
+		case GROOVE_JUNGLE:
+			targets = jungleTargets;
+			return 4;
+		default:
+			targets = nullptr;
+			return 0;
+	}
+}
+
+static int mapSnareAnchorTargetStep(const SnareAnchorTarget& target, int numSteps) {
+	if (numSteps <= 0) return 0;
+	return (int)std::lround((target.step16 / 16.f) * numSteps) % numSteps;
+}
+
+static float getFamilySnareAnchorAffinity(GrooveFamily family, int step, int numSteps) {
+	const SnareAnchorTarget* targets = nullptr;
+	int targetCount = getFamilySnareAnchorTargets(family, targets);
+	if (targetCount <= 0 || numSteps <= 0) return 0.f;
+
+	int tolerance = (numSteps >= 24) ? 1 : 0;
+	float best = 0.f;
+	for (int i = 0; i < targetCount; ++i) {
+		int mapped = mapSnareAnchorTargetStep(targets[i], numSteps);
+		int dist = wrapStepDistance(step, mapped, numSteps);
+		if (dist > tolerance) continue;
+		float proximity = 1.f - ((float)dist / (float)(tolerance + 1));
+		best = std::max(best, targets[i].weight * proximity);
+	}
+	return best;
+}
+
 static bool isFamilySnareAnchorStep(GrooveFamily family, int step, int numSteps) {
 	if (numSteps <= 3) return false;
-	const int* maskTargets = nullptr;
-	int targetCount = 0;
-	static const int amenTargets[] = {2, 6, 10, 14};
-	static const int jungleTargets[] = {4, 12};
-	if (family == GROOVE_AMEN) {
-		maskTargets = amenTargets;
-		targetCount = 4;
-	}
-	else if (family == GROOVE_JUNGLE) {
-		maskTargets = jungleTargets;
-		targetCount = 2;
-	}
-	else {
-		return false;
-	}
-	int tolerance = (numSteps >= 32) ? 1 : 0;
-	for (int i = 0; i < targetCount; ++i) {
-		int target = (int)std::lround((maskTargets[i] / 16.f) * numSteps) % numSteps;
-		if (wrapStepDistance(step, target, numSteps) <= tolerance) {
-			return true;
-		}
-	}
-	return false;
+	return getFamilySnareAnchorAffinity(family, step, numSteps) > 0.f;
 }
 
 static bool isProtectedGrooveAnchorStep(GrooveFamily family, int voice, int step, int numSteps) {
@@ -372,8 +407,8 @@ struct Trigonomicon : Module {
 	enum ParamId {
 		CLOCK_RES_PARAM,
 		PATTERN_SELECT_PARAM,
-		BASS_SCALE_PARAM,
 		MUTATE_PARAM,
+		BASS_SCALE_PARAM,
 		WILD_MODE_PARAM,
 		PARAMS_LEN
 	};
@@ -474,6 +509,8 @@ struct Trigonomicon : Module {
 
 	// Donor pattern for segment DNA swap
 	int donorPatternIndex = -1;
+	bool donorUsesTripletPool = false;
+	int donorTripletPatternIndex = -1;
 
 	// Pre-rolled random thresholds per segment/voice.
 	// A segment swaps when segmentAmount > threshold.
@@ -507,6 +544,14 @@ struct Trigonomicon : Module {
 	int controlRateCounter = 0;
 	static const int CONTROL_RATE_DIV = 32;
 	char debugStepText[64] = "";
+#ifdef METAMODULE
+	// Debounce PATTERN_SELECT_INPUT on MetaModule (no-clock path only):
+	// applyPatternSelection() calls rebuildCorrectedPatternBuffer (up to 3 rounds
+	// of groove enforcement loops). A CV source jittering at a pattern boundary
+	// fires this every sample -> CPU spikes. Allow at most one switch per ~0.5 s.
+	static constexpr uint32_t kPatternCvCooldownSamples = 24000;
+	uint32_t mmPatternCvCooldown = 0;
+#endif
 
 	// Flag: mutation buffer needs rebuild
 	bool mutationDirty = true;
@@ -555,6 +600,13 @@ struct Trigonomicon : Module {
 	bool  bassSlideActive        = false;  // true while exponential portamento is converging
 	float bassSlideCoeff         = 1.0f;   // precomputed exp convergence coefficient (1.0 = instant)
 	int   bassNoteOctDecoration  = 0;      // per-note octave decoration: -1 / 0 / +1
+	int bassMotifSemitones[8] = {};
+	int bassMotifLength = 4;
+	int bassMotifStep = 0;
+	int bassMotifCyclesLeft = 0;
+	int bassMotifCandidateDiv = 2;
+	int bassMotifCandidateCount = 0;
+	GrooveFamily bassGrooveFamily = GROOVE_OTHER;
 
 	// --- Generative fill helper ---
 	// Schedules a short multi-voice ratchet burst as a transition fill.
@@ -562,43 +614,134 @@ struct Trigonomicon : Module {
 	// --- Generative fill helper ---
 	// intensity: 0.0 = gentle (kick doublet), 1.0 = explosive (all voices, dense).
 	// Fill spans 2 clock periods for musical weight at moderate tempos.
+	float getVoiceTriggerSeconds(int voice) const {
+		if (voice == VOICE_OHAT) return OPEN_HAT_TRIGGER_SECONDS;
+		if (voice == VOICE_KICK) return KICK_TRIGGER_SECONDS;
+		return DRUM_TRIGGER_SECONDS;
+	}
+
 	void scheduleTransitionFill(float intensity) {
 		uint32_t fillWindow = clockIntervalSamples * 2u;
 		if (fillWindow < 960u) fillWindow = 960u; // safety floor
+		int patternIndex = (lastPattern >= 0) ? lastPattern : 0;
+		GrooveFamily family = getGrooveFamilyForPattern(patternIndex);
 
 		for (int v = 0; v < NUM_VOICES; v++) {
 			float roll = random::uniform();
 			int hits = 0;
 			uint32_t interval = 0;
 
-			// Voice participation and density scale with intensity
-			if (v == VOICE_KICK) {
-				// Kick always participates — 2 hits at low intensity, up to 6 at max
+			if (family == GROOVE_JUNGLE) {
+				if (v == VOICE_KICK) {
+					float kickChance = 0.10f + intensity * 0.22f;
+					if (roll < kickChance) {
+						hits = 1 + (int)(intensity * 2.f);
+						interval = fillWindow / (uint32_t)(hits + 3);
+					}
+				}
+				else if (v == VOICE_SNARE1) {
+					float snareChance = 0.45f + intensity * 0.40f;
+					if (roll < snareChance) {
+						hits = 1 + (int)(intensity * 2.f);
+						interval = fillWindow / (uint32_t)(hits + 1);
+					}
+				}
+				else if (v == VOICE_SNARE2) {
+					float clapChance = 0.55f + intensity * 0.25f;
+					if (roll < clapChance) {
+						hits = 2 + (int)(intensity * 4.f);
+						interval = fillWindow / (uint32_t)(hits + 1);
+					}
+				}
+				else if (v == VOICE_CHAT) {
+					float hatChance = 0.35f + intensity * 0.25f;
+					if (roll < hatChance) {
+						hits = 2 + (int)(intensity * 5.f);
+						interval = fillWindow / (uint32_t)hits;
+					}
+				}
+				else if (v == VOICE_OHAT) {
+					float ohChance = 0.10f + intensity * 0.25f;
+					if (roll < ohChance) {
+						hits = 1 + (int)(intensity * 1.5f);
+						interval = fillWindow / (uint32_t)(hits + 2);
+					}
+				}
+				else if (v == VOICE_RIDE) {
+					float rideChance = 0.10f + intensity * 0.20f;
+					if (roll < rideChance) {
+						hits = 1 + (int)(intensity * 2.f);
+						interval = fillWindow / (uint32_t)(hits + 1);
+					}
+				}
+			}
+			else if (family == GROOVE_BREAKCORE) {
+				if (v == VOICE_KICK) {
+					hits = 2 + (int)(intensity * 5.f);
+					interval = fillWindow / (uint32_t)hits;
+				}
+				else if (v == VOICE_SNARE1) {
+					float snareChance = 0.35f + intensity * 0.50f;
+					if (roll < snareChance) {
+						hits = 2 + (int)(intensity * 4.f);
+						interval = fillWindow / (uint32_t)(hits + 1);
+					}
+				}
+				else if (v == VOICE_SNARE2) {
+					float clapChance = 0.25f + intensity * 0.55f;
+					if (roll < clapChance) {
+						hits = 1 + (int)(intensity * 3.f);
+						interval = fillWindow / (uint32_t)(hits + 2);
+					}
+				}
+				else if (v == VOICE_CHAT) {
+					float hatChance = 0.60f + intensity * 0.30f;
+					if (roll < hatChance) {
+						hits = 4 + (int)(intensity * 10.f);
+						interval = fillWindow / (uint32_t)hits;
+					}
+				}
+				else if (v == VOICE_OHAT) {
+					float ohChance = 0.25f + intensity * 0.35f;
+					if (roll < ohChance) {
+						hits = 1 + (int)(intensity * 2.f);
+						interval = fillWindow / (uint32_t)(hits + 1);
+					}
+				}
+				else if (v == VOICE_RIDE) {
+					float rideChance = 0.08f + intensity * 0.18f;
+					if (roll < rideChance) {
+						hits = 1 + (int)(intensity * 2.f);
+						interval = fillWindow / (uint32_t)(hits + 1);
+					}
+				}
+			}
+			else if (v == VOICE_KICK) {
 				hits = 2 + (int)(intensity * 4.f);
 				interval = fillWindow / (uint32_t)hits;
-			} else if (v == VOICE_SNARE1) {
-				// Snare1: needs intensity > 0.2 to participate
+			}
+			else if (v == VOICE_SNARE1) {
 				float snareChance = 0.3f + intensity * 0.6f;
 				if (roll < snareChance) {
 					hits = 2 + (int)(intensity * 3.f);
 					interval = fillWindow / (uint32_t)(hits + 1);
 				}
-			} else if (v == VOICE_SNARE2) {
-				// Snare2/clap: needs intensity > 0.4
+			}
+			else if (v == VOICE_SNARE2) {
 				float clapChance = intensity * 0.5f;
 				if (roll < clapChance) {
 					hits = 1 + (int)(intensity * 2.f);
 					interval = fillWindow / (uint32_t)(hits + 2);
 				}
-			} else if (v == VOICE_CHAT) {
-				// Closed hat: almost always present — 3 at low, up to 12 at max
+			}
+			else if (v == VOICE_CHAT) {
 				float hatChance = 0.5f + intensity * 0.4f;
 				if (roll < hatChance) {
 					hits = 3 + (int)(intensity * 9.f);
 					interval = fillWindow / (uint32_t)hits;
 				}
-			} else if (v == VOICE_OHAT) {
-				// Open hat: accent splash — more likely at high intensity
+			}
+			else if (v == VOICE_OHAT) {
 				float ohChance = 0.2f + intensity * 0.4f;
 				if (roll < ohChance) {
 					hits = 1 + (int)(intensity * 2.f);
@@ -607,7 +750,7 @@ struct Trigonomicon : Module {
 			}
 
 			if (hits > 0 && interval > 0) {
-				float dur = (v == VOICE_OHAT) ? 0.10f : 5e-3f;
+				float dur = getVoiceTriggerSeconds(v);
 				triggerVoicePulse(v, dur);
 				if (hits > 1) {
 					ratchetsRemaining[v] = hits - 1;
@@ -664,10 +807,20 @@ struct Trigonomicon : Module {
 		return bestIndex;
 	}
 
-	// CV always snaps to target immediately — trigger and CV are always sample-accurate.
-	// (Slide removed: it caused pitch/trigger misalignment on downstream synths.)
-	float chooseBassGlideSeconds(float /*sampleRate*/, bool /*doubleTime*/, bool /*isOffbeat*/) const {
-		return 0.f;
+	// Keep bass slides short and source-aware so the motion is audible without making
+	// downstream synth pitch/gate alignment unusably loose.
+	float chooseBassGlideSeconds(float /*sampleRate*/, bool doubleTime, bool isOffbeat) const {
+		float glideSeconds = 0.040f;
+		switch (bassSourceRecipe) {
+			case BASS_SOURCE_KICK:        glideSeconds = 0.030f; break;
+			case BASS_SOURCE_KICK_SNARE1: glideSeconds = 0.038f; break;
+			case BASS_SOURCE_SNARES:      glideSeconds = 0.048f; break;
+			case BASS_SOURCE_CLOSED_HAT:  glideSeconds = 0.055f; break;
+			default:                      glideSeconds = 0.040f; break;
+		}
+		if (doubleTime) glideSeconds *= 0.75f;
+		if (isOffbeat)  glideSeconds *= 1.10f;
+		return glideSeconds;
 	}
 
 	// SlideWyrm-inspired: probability of a portamento (slide) on a given bass trigger,
@@ -718,16 +871,113 @@ struct Trigonomicon : Module {
 
 	int chooseBassSourceRecipe() const {
 		float roll = random::uniform();
-		if (roll < 0.50f) return BASS_SOURCE_KICK;
-		if (roll < 0.70f) return BASS_SOURCE_KICK_SNARE1;
-		if (roll < 0.85f) return BASS_SOURCE_CLOSED_HAT;
-		return BASS_SOURCE_SNARES;
+		switch (bassGrooveFamily) {
+			case GROOVE_JUNGLE:
+			case GROOVE_AMEN:
+				if (roll < 0.65f) return BASS_SOURCE_KICK;
+				if (roll < 0.82f) return BASS_SOURCE_KICK_SNARE1;
+				if (roll < 0.92f) return BASS_SOURCE_CLOSED_HAT;
+				return BASS_SOURCE_SNARES;
+			case GROOVE_BREAKCORE:
+				if (roll < 0.40f) return BASS_SOURCE_KICK;
+				if (roll < 0.60f) return BASS_SOURCE_KICK_SNARE1;
+				if (roll < 0.80f) return BASS_SOURCE_CLOSED_HAT;
+				return BASS_SOURCE_SNARES;
+			case GROOVE_OTHER:
+			default:
+				if (roll < 0.50f) return BASS_SOURCE_KICK;
+				if (roll < 0.70f) return BASS_SOURCE_KICK_SNARE1;
+				if (roll < 0.85f) return BASS_SOURCE_CLOSED_HAT;
+				return BASS_SOURCE_SNARES;
+		}
 	}
 
 	void startBassCycle() {
+		if (bassMotifCyclesLeft > 0) {
+			return;
+		}
+		// Keep the trigger recipe locked to the motif phrase so cadence and pitch
+		// do not drift apart mid-riff.
 		bassSourceRecipe = chooseBassSourceRecipe();
 		bassHatThinProbability = 0.50f + random::uniform() * 0.20f;
 		bassHatThinProbability = math::clamp(bassHatThinProbability, 0.50f, 0.70f);
+		generateBassMotif(bassGrooveFamily);
+	}
+
+	void generateBassMotif(GrooveFamily family) {
+		static const int jungleVocab[8] = {0, 0, 0, 0, 10, 7, 3, 0};
+		static const int amenVocab[8] = {0, 0, 3, 7, 0, 0, 10, 3};
+		static const int breakcoreVocab[8] = {0, 3, 5, 7, 10, 0, 0, 3};
+		static const int genericVocab[8] = {0, 0, 3, 7, 0, 10, 0, 5};
+
+		const int* vocab = genericVocab;
+		bool rootHeavyFamily = false;
+		switch (family) {
+			case GROOVE_JUNGLE:
+				vocab = jungleVocab;
+				rootHeavyFamily = true;
+				break;
+			case GROOVE_AMEN:
+				vocab = amenVocab;
+				rootHeavyFamily = true;
+				break;
+			case GROOVE_BREAKCORE:
+				vocab = breakcoreVocab;
+				break;
+			case GROOVE_OTHER:
+			default:
+				break;
+		}
+
+		bassMotifLength = ((family == GROOVE_BREAKCORE)
+			? (random::uniform() < 0.35f)
+			: (random::uniform() < 0.65f)) ? 4 : 8;
+		bassMotifCyclesLeft = (family == GROOVE_BREAKCORE)
+			? (1 + (int)(random::uniform() * 2.f))
+			: (2 + (int)(random::uniform() * 2.f));
+
+		switch (bassSourceRecipe) {
+			case BASS_SOURCE_KICK:
+				bassMotifCandidateDiv = (family == GROOVE_BREAKCORE && random::uniform() < 0.40f) ? 1 : 2;
+				break;
+			case BASS_SOURCE_KICK_SNARE1:
+				bassMotifCandidateDiv = 2;
+				break;
+			case BASS_SOURCE_CLOSED_HAT:
+			case BASS_SOURCE_SNARES:
+				bassMotifCandidateDiv = 1;
+				break;
+			default:
+				bassMotifCandidateDiv = 2;
+				break;
+		}
+		bassMotifCandidateCount = 0;
+
+		for (int index = 0; index < 8; ++index) {
+			bassMotifSemitones[index] = 0;
+		}
+
+		bassMotifSemitones[0] = 0;
+		float rootChance = rootHeavyFamily ? 0.45f : 0.28f;
+		for (int step = 1; step < bassMotifLength; ++step) {
+			if (random::uniform() < rootChance) {
+				bassMotifSemitones[step] = 0;
+			}
+			else {
+				int vocabIndex = (int)(random::uniform() * 8.f);
+				if (vocabIndex >= 8) vocabIndex = 7;
+				bassMotifSemitones[step] = vocab[vocabIndex];
+			}
+		}
+
+		if (bassMotifLength > 2 && bassMotifSemitones[bassMotifLength - 1] != 0) {
+			float resolveChance = rootHeavyFamily ? 0.70f : 0.40f;
+			if (random::uniform() < resolveChance) {
+				bassMotifSemitones[bassMotifLength - 1] = 0;
+			}
+		}
+
+		bassMotifStep = 0;
 	}
 
 	int chooseBassAnchorIndex(bool extendedRange) {
@@ -831,16 +1081,16 @@ struct Trigonomicon : Module {
 		return BASS_BASE_VOLTAGE + (float)bassDegreeIndexToSemitone(index) / 12.f;
 	}
 
-	void triggerBassSampleHold(float sampleRate, bool extendedRange, bool isDoubleTime) {
-		bassPitchIndex = chooseNextBassPitchIndex(extendedRange, isDoubleTime);
+	void triggerBassSampleHold(float sampleRate, bool extendedRange, bool isDoubleTime, int motifSemitone = 0) {
+		bassPitchIndex = nearestBassIndexForSemitone(motifSemitone, extendedRange);
 		bassTargetCv = bassPitchVoltageForIndex(bassPitchIndex);
 
 		// Per-note ±octave decoration (TB-303 style spontaneous octave leap).
 		// 12.5% chance up, 12.5% down, 75% unchanged.
 		{
 			float decorRoll = random::uniform();
-			if (decorRoll < 0.125f)       bassNoteOctDecoration = -1;
-			else if (decorRoll < 0.25f)   bassNoteOctDecoration = +1;
+			if (decorRoll < 0.08f)        bassNoteOctDecoration = -1;
+			else if (decorRoll < 0.16f)   bassNoteOctDecoration = +1;
 			else                          bassNoteOctDecoration =  0;
 			bassTargetCv += (float)bassNoteOctDecoration;
 		}
@@ -849,27 +1099,29 @@ struct Trigonomicon : Module {
 		// Probability is source-recipe weighted; on slide notes the gate fires while
 		// CV is still at the previous pitch and converges exponentially (50ms).
 		{
+			float glideSeconds = chooseBassGlideSeconds(sampleRate, isDoubleTime, false);
 			float slideRoll = random::uniform();
-			bassSlideActive = bassStateInitialized && (slideRoll < getBaseSlideProbability());
+			bassSlideActive = bassStateInitialized && glideSeconds > 0.f && (slideRoll < getBaseSlideProbability());
 			if (bassSlideActive) {
 				// CV stays at current value — portamento starts from the previous pitch.
-				static const float BASS_PORTAMENTO_SECONDS = 0.050f;
-				bassSlideCoeff = 1.f - fastExpApprox(-1.f / (BASS_PORTAMENTO_SECONDS * sampleRate));
+				bassSlideCoeff = 1.f - fastExpApprox(-1.f / (glideSeconds * sampleRate));
+				beginBassSlide(sampleRate, isDoubleTime, false);
 			} else {
 				// Instant snap — downstream synths always open on the exact target pitch.
 				bassCurrentCv = bassTargetCv;
+				bassSlideStartCv = bassCurrentCv;
 				bassSlideCoeff = 1.0f;
+				bassSlideSamplesRemaining = 0u;
+				bassSlideTotalSamples = 0u;
 			}
 		}
 
 		bassSlideStartCv = bassCurrentCv;
 		bassStateInitialized = true;
-		// Gate length: 50% of one clock step, clamped to at least 8ms so
-		// envelope-based synths (e.g. Minimalith) reliably respond.
 		float clockSeconds = sampleRate > 0.f ? (float)clockIntervalSamples / sampleRate : BASS_TRIGGER_SECONDS;
-		float gateSeconds = std::max(BASS_TRIGGER_SECONDS, clockSeconds * 0.5f);
+		float holdSeconds = clockSeconds * (float)std::max(1, bassMotifCandidateDiv) * 0.88f;
+		float gateSeconds = std::max(BASS_TRIGGER_SECONDS, holdSeconds);
 		bassTriggerPulse.trigger(gateSeconds);
-		beginBassSlide(sampleRate, isDoubleTime, false);
 		bassSamplesSinceTrigger = 0;
 	}
 
@@ -893,6 +1145,15 @@ struct Trigonomicon : Module {
 		bassSlideActive       = false;
 		bassSlideCoeff        = 1.0f;
 		bassNoteOctDecoration = 0;
+		for (int index = 0; index < 8; ++index) {
+			bassMotifSemitones[index] = 0;
+		}
+		bassMotifStep = 0;
+		bassMotifLength = 4;
+		bassMotifCyclesLeft = 0;
+		bassMotifCandidateDiv = 2;
+		bassMotifCandidateCount = 0;
+		bassGrooveFamily = (lastPattern >= 0) ? getGrooveFamilyForPattern(lastPattern) : GROOVE_OTHER;
 		bassStateInitialized = false;
 		startBassCycle();
 	}
@@ -901,19 +1162,86 @@ struct Trigonomicon : Module {
 	// Mutation helper methods (all called from process context)
 	// ----------------------------------------------------------------
 
-	// Choose a donor pattern within ±5 of current, never same as self
-	void chooseDonorPattern(int currentPattern) {
+	void chooseTripletDonorPattern() {
+		donorUsesTripletPool = true;
+		if (NUM_TRIPLET_DONOR_PATTERNS <= 0) {
+			donorTripletPatternIndex = -1;
+			return;
+		}
+		donorTripletPatternIndex = (int)(random::uniform() * (float)NUM_TRIPLET_DONOR_PATTERNS);
+		if (donorTripletPatternIndex >= NUM_TRIPLET_DONOR_PATTERNS) {
+			donorTripletPatternIndex = NUM_TRIPLET_DONOR_PATTERNS - 1;
+		}
+		donorPatternIndex = -1;
+	}
+
+	void chooseMainBankDonorPattern(int currentPattern) {
+		GrooveFamily family = getGrooveFamilyForPattern(currentPattern);
+		int donorRange = (family == GROOVE_JUNGLE || family == GROOVE_BREAKCORE) ? 10 : 5;
 		int attempts = 0;
 		int donor;
 		do {
-			// Random offset -5..+5, wrap around
-			int offset = (int)(random::uniform() * 11.f) - 5;
+			int offset = (int)(random::uniform() * (float)(donorRange * 2 + 1)) - donorRange;
 			donor = currentPattern + offset;
 			if (donor < 0) donor += NUM_PATTERNS;
 			if (donor >= NUM_PATTERNS) donor -= NUM_PATTERNS;
 			attempts++;
 		} while (donor == currentPattern && attempts < 20);
+		donorUsesTripletPool = false;
+		donorTripletPatternIndex = -1;
 		donorPatternIndex = donor;
+	}
+
+	void chooseRandomMainBankDonorPattern() {
+		donorUsesTripletPool = false;
+		donorTripletPatternIndex = -1;
+		donorPatternIndex = (int)(random::uniform() * NUM_PATTERNS);
+		if (donorPatternIndex >= NUM_PATTERNS) donorPatternIndex = NUM_PATTERNS - 1;
+	}
+
+	bool shouldUseTripletDonorPool(int currentPattern, bool fullChaos) const {
+		GrooveFamily family = getGrooveFamilyForPattern(currentPattern);
+		if (family != GROOVE_JUNGLE && family != GROOVE_BREAKCORE) {
+			return false;
+		}
+		float tripletChance = 0.f;
+		if (family == GROOVE_JUNGLE) {
+			tripletChance = fullChaos ? 0.55f : 0.40f;
+		}
+		else {
+			tripletChance = fullChaos ? 0.35f : 0.22f;
+		}
+		return NUM_TRIPLET_DONOR_PATTERNS > 0 && random::uniform() < tripletChance;
+	}
+
+	// Choose a donor pattern within a groove-aware neighborhood, or from the internal
+	// triplet donor pool for jungle/breakcore mutation.
+	void chooseDonorPattern(int currentPattern) {
+		if (shouldUseTripletDonorPool(currentPattern, false)) {
+			chooseTripletDonorPattern();
+			return;
+		}
+		chooseMainBankDonorPattern(currentPattern);
+	}
+
+	void chooseFullChaosDonorPattern(int currentPattern) {
+		if (shouldUseTripletDonorPool(currentPattern, true)) {
+			chooseTripletDonorPattern();
+			return;
+		}
+		chooseRandomMainBankDonorPattern();
+	}
+
+	const Pattern& getActiveDonorPattern(const Pattern& base) const {
+		if (donorUsesTripletPool &&
+			donorTripletPatternIndex >= 0 &&
+			donorTripletPatternIndex < NUM_TRIPLET_DONOR_PATTERNS) {
+			return TRIPLET_DONOR_PATTERNS[donorTripletPatternIndex];
+		}
+		if (donorPatternIndex >= 0 && donorPatternIndex < NUM_PATTERNS) {
+			return PATTERNS[donorPatternIndex];
+		}
+		return base;
 	}
 
 	// Fill segmentThresholds with fresh random values
@@ -975,7 +1303,9 @@ struct Trigonomicon : Module {
 			case VOICE_SNARE1:
 				return (family == GROOVE_BREAKCORE) ? 0.18f : 0.42f;
 			case VOICE_SNARE2:
-				return (family == GROOVE_BREAKCORE) ? 0.26f : 0.70f;
+				if (family == GROOVE_BREAKCORE) return 0.26f;
+				if (family == GROOVE_JUNGLE) return 0.38f;
+				return 0.70f;
 			case VOICE_CHAT:
 				return (family == GROOVE_BREAKCORE) ? 0.35f : 0.95f;
 			case VOICE_OHAT:
@@ -999,16 +1329,16 @@ struct Trigonomicon : Module {
 	}
 
 	uint32_t getRoleTimingDelaySamples(int voice, bool protectedAnchor, bool strongBeat, bool replaying) const {
+		GrooveFamily family = getGrooveFamilyForPattern((lastPattern >= 0) ? lastPattern : 0);
 		float scale = 1.f;
 		switch (voice) {
 			case VOICE_KICK:
-				scale = strongBeat ? 0.10f : 0.35f;
-				break;
+				return 0u;
 			case VOICE_SNARE1:
 				scale = protectedAnchor ? 0.30f : 0.70f;
 				break;
 			case VOICE_SNARE2:
-				scale = 0.95f;
+				scale = (family == GROOVE_JUNGLE) ? 0.70f : 0.95f;
 				break;
 			case VOICE_CHAT:
 				scale = strongBeat ? 0.55f : 1.00f;
@@ -1187,7 +1517,7 @@ struct Trigonomicon : Module {
 		switch (family) {
 			case GROOVE_AMEN:      baseSwing = 0.08f; break;
 			case GROOVE_JUNGLE:    baseSwing = 0.11f; break;
-			case GROOVE_BREAKCORE: baseSwing = 0.01f; break;
+			case GROOVE_BREAKCORE: baseSwing = 0.12f; break;
 			default:               baseSwing = 0.04f; break;
 		}
 		baseSwing *= 1.f + microAmount * 0.35f;
@@ -1231,7 +1561,7 @@ struct Trigonomicon : Module {
 				voiceStep[v] = 0;
 			}
 			if (voicePattern.steps[step] >= 0.5f) {
-				float duration = (v == VOICE_OHAT) ? 0.10f : 5e-3f;
+				float duration = getVoiceTriggerSeconds(v);
 				triggerVoicePulse(v, duration);
 				fired[v] = true;
 			}
@@ -1246,6 +1576,8 @@ struct Trigonomicon : Module {
 		bool hardCutThisTick = false;
 		if (wildStutterCooldownSteps > 0) wildStutterCooldownSteps--;
 		if (wildCutCooldownSteps > 0) wildCutCooldownSteps--;
+		GrooveFamily grooveFamily = getGrooveFamilyForPattern(patternIndex);
+		bassGrooveFamily = grooveFamily;
 		bool kickPlaysTick  = (sparseMode == 0 || sparseMode == 3 || sparseMode == 4);
 		bool snarePlaysTick = (sparseMode == 0);
 		bool hatPlaysTick   = (sparseMode == 0 || sparseMode == 1 || sparseMode == 4);
@@ -1320,7 +1652,6 @@ struct Trigonomicon : Module {
 		const Pattern& basePat = (patternIndex == 0 && !wildMode)
 			? PATTERNS[patternIndex]
 			: correctedBasePattern;
-		GrooveFamily grooveFamily = getGrooveFamilyForPattern(patternIndex);
 		bool closedHatFiredThisTick = false;
 		int tickStep[NUM_VOICES] = {};
 		float tickBaseProbability[NUM_VOICES] = {};
@@ -1359,7 +1690,9 @@ struct Trigonomicon : Module {
 				shouldFire = stutterCache[v];
 			}
 			else {
-				float probability = baseVP.steps[step];
+				float authoredProbability = baseVP.steps[step];
+				bool preserveAuthoredHit = !wildMode && authoredProbability >= 0.999f;
+				float probability = authoredProbability;
 				float grooveTarget = getGrooveTargetProbability(grooveFamily, v, step, baseVP.numSteps);
 				bool protectedAnchor = accentProtectedAnchor;
 				if (blendAmount > 0.f && random::uniform() < blendAmount) {
@@ -1407,6 +1740,10 @@ struct Trigonomicon : Module {
 					probability = std::max(probability, std::min(fillFloor, grooveTarget));
 				}
 
+				if (preserveAuthoredHit) {
+					probability = 1.f;
+				}
+
 				if (chaosAmount > 0.f && voiceIsStutterable) {
 					float maskedGhost = getGrooveTargetProbability(grooveFamily, VOICE_SNARE2, step, baseVP.numSteps);
 					if (v == VOICE_SNARE2 && maskedGhost > 0.10f) {
@@ -1444,6 +1781,10 @@ struct Trigonomicon : Module {
 					}
 					ghostCap = std::max(ghostCap, baseVP.steps[step]);
 					probability = std::min(probability, ghostCap);
+				}
+
+				if (preserveAuthoredHit) {
+					probability = 1.f;
 				}
 
 				if (probability >= 1.f) {
@@ -1500,7 +1841,6 @@ struct Trigonomicon : Module {
 					bool isClosedHatVoice = (v == VOICE_CHAT);
 					bool isOpenHatVoice = (v == VOICE_OHAT);
 					bool isRideVoice = (v == VOICE_RIDE);
-					bool isHatVoice = isClosedHatVoice || isOpenHatVoice || isRideVoice;
 					float maxProb;
 					if (v == VOICE_SNARE2)      maxProb = wildMode ? 0.05f  : 0.015f;
 					else if (v == VOICE_SNARE1) maxProb = wildMode ? 0.015f : 0.01f;
@@ -1627,8 +1967,7 @@ struct Trigonomicon : Module {
 					0.f,
 					10.f);
 
-				float dur = (v == VOICE_OHAT) ? 0.10f : 5e-3f;
-				if (v == VOICE_KICK && wildMode) dur = 8e-3f;
+				float dur = getVoiceTriggerSeconds(v);
 				if (newRatchetHitsRemaining > 0) {
 					dur = ratchetPulseDuration(newRatchetIntervalSamples, args.sampleTime, dur);
 				}
@@ -1720,15 +2059,34 @@ struct Trigonomicon : Module {
 		}
 
 		if (bassCandidate && bassSamplesSinceTrigger >= bassMinTriggerSpacingSamples) {
-			bool doFire = true;
-			if (bassWildDoubleTimeActive && bassWildSkipEvery > 0) {
-				bassWildSkipCounter++;
-				if (bassWildSkipCounter % bassWildSkipEvery == 0) {
-					doFire = false;
+			bassMotifCandidateCount++;
+			if (bassMotifCandidateCount >= std::max(1, bassMotifCandidateDiv)) {
+				bassMotifCandidateCount = 0;
+
+				int motifLength = std::max(1, bassMotifLength);
+				int motifIndex = math::clamp(bassMotifStep, 0, motifLength - 1);
+				int motifSemitone = bassMotifSemitones[motifIndex];
+				bool doFire = true;
+				if (bassWildDoubleTimeActive && bassWildSkipEvery > 0) {
+					bassWildSkipCounter++;
+					if (bassWildSkipCounter % bassWildSkipEvery == 0) {
+						doFire = false;
+					}
 				}
-			}
-			if (doFire) {
-				triggerBassSampleHold(args.sampleRate, bassWildDoubleTimeActive, false);
+				if (doFire) {
+					triggerBassSampleHold(args.sampleRate, bassWildDoubleTimeActive, false, motifSemitone);
+				}
+
+				bassMotifStep++;
+				if (bassMotifStep >= motifLength) {
+					bassMotifStep = 0;
+					if (bassMotifCyclesLeft > 0) {
+						bassMotifCyclesLeft--;
+					}
+					if (bassMotifCyclesLeft <= 0) {
+						startBassCycle();
+					}
+				}
 			}
 		}
 		bassCycleClock++;
@@ -1764,32 +2122,58 @@ struct Trigonomicon : Module {
 		return VALIDATION_PROFILE_BREAKBEAT;
 	}
 
-	int getPrimarySnareAnchorTargetStep(GrooveFamily family, int numSteps) const {
-		if (numSteps <= 0) return 0;
-		static const int amenTargets[] = {2, 6, 10, 14};
-		static const int jungleTargets[] = {4, 12};
-		const int* targets = nullptr;
-		int targetCount = 0;
-		if (family == GROOVE_AMEN) {
-			targets = amenTargets;
-			targetCount = 4;
-		}
-		else if (family == GROOVE_JUNGLE) {
-			targets = jungleTargets;
-			targetCount = 2;
-		}
-		else {
-			return numSteps / 2;
+	float computePrimarySnareAnchorCoverage(const VoicePattern& snare, GrooveFamily family) const {
+		const SnareAnchorTarget* targets = nullptr;
+		int targetCount = getFamilySnareAnchorTargets(family, targets);
+		if (snare.numSteps <= 0) return 1.f;
+		if (targetCount <= 0) {
+			int midpoint = snare.numSteps / 2;
+			int window = std::max(1, snare.numSteps / 16);
+			return hasPrimarySnareAround(snare, midpoint, window) ? 1.f : 0.f;
 		}
 
-		int midpoint = numSteps / 2;
-		int bestStep = midpoint;
-		int bestDistance = INT_MAX;
+		int window = std::max(1, snare.numSteps / 16);
+		float bestWeight = 0.f;
+		float totalWeight = 0.f;
 		for (int i = 0; i < targetCount; ++i) {
-			int mapped = (int)std::lround((targets[i] / 16.f) * numSteps) % numSteps;
-			int distance = wrapStepDistance(mapped, midpoint, numSteps);
-			if (distance < bestDistance) {
-				bestDistance = distance;
+			int mapped = mapSnareAnchorTargetStep(targets[i], snare.numSteps);
+			if (!hasPrimarySnareAround(snare, mapped, window)) continue;
+			bestWeight = std::max(bestWeight, targets[i].weight);
+			totalWeight += targets[i].weight;
+		}
+
+		if (family == GROOVE_JUNGLE) {
+			float syncWeight = std::max(0.f, totalWeight - bestWeight);
+			return math::clamp(bestWeight * 0.85f + syncWeight * 0.25f, 0.f, 1.f);
+		}
+		return math::clamp(totalWeight, 0.f, 1.f);
+	}
+
+	int getPrimarySnareAnchorTargetStep(const VoicePattern& snare, GrooveFamily family) const {
+		if (snare.numSteps <= 0) return 0;
+		const SnareAnchorTarget* targets = nullptr;
+		int targetCount = getFamilySnareAnchorTargets(family, targets);
+		if (targetCount <= 0) {
+			return snare.numSteps / 2;
+		}
+
+		int midpoint = snare.numSteps / 2;
+		int window = std::max(1, snare.numSteps / 16);
+		int bestStep = midpoint;
+		float bestScore = -FLT_MAX;
+		for (int i = 0; i < targetCount; ++i) {
+			int mapped = mapSnareAnchorTargetStep(targets[i], snare.numSteps);
+			float score = targets[i].weight * 1.60f;
+			int candidate = findNearestSnareCandidate(snare, mapped, 0.30f);
+			if (candidate >= 0) {
+				int distance = wrapStepDistance(candidate, mapped, snare.numSteps);
+				float proximity = 1.f - std::min(1.f, (float)distance / (float)(window + 1));
+				score += snare.steps[candidate] * 0.90f;
+				score += proximity * 0.60f;
+			}
+			score -= 0.06f * (float)wrapStepDistance(mapped, midpoint, snare.numSteps);
+			if (score > bestScore) {
+				bestScore = score;
 				bestStep = mapped;
 			}
 		}
@@ -1860,12 +2244,31 @@ struct Trigonomicon : Module {
 		VoicePattern& snare = pattern.voices[VOICE_SNARE1];
 		if (snare.numSteps <= 0) return;
 
-		int targetStep = getPrimarySnareAnchorTargetStep(family, snare.numSteps);
+		const SnareAnchorTarget* targets = nullptr;
+		int targetCount = getFamilySnareAnchorTargets(family, targets);
 		int window = std::max(1, snare.numSteps / 16);
-		if (hasPrimarySnareAround(snare, targetStep, window)) {
-			snare.steps[targetStep] = std::max(snare.steps[targetStep], 0.88f);
-			return;
+		if (targetCount > 0) {
+			int bestExistingStep = -1;
+			float bestExistingScore = -FLT_MAX;
+			for (int i = 0; i < targetCount; ++i) {
+				int mapped = mapSnareAnchorTargetStep(targets[i], snare.numSteps);
+				int candidate = findNearestSnareCandidate(snare, mapped, 0.55f);
+				if (candidate < 0) continue;
+				int distance = wrapStepDistance(candidate, mapped, snare.numSteps);
+				if (distance > window) continue;
+				float score = targets[i].weight * 1.50f + snare.steps[candidate];
+				if (score > bestExistingScore) {
+					bestExistingScore = score;
+					bestExistingStep = candidate;
+				}
+			}
+			if (bestExistingStep >= 0) {
+				snare.steps[bestExistingStep] = std::max(snare.steps[bestExistingStep], 0.88f);
+				return;
+			}
 		}
+
+		int targetStep = getPrimarySnareAnchorTargetStep(snare, family);
 
 		int sourceStep = findNearestSnareCandidate(snare, targetStep, 0.30f);
 		if (sourceStep >= 0 && sourceStep != targetStep) {
@@ -1901,8 +2304,7 @@ struct Trigonomicon : Module {
 		VoicePattern& snare = pattern.voices[VOICE_SNARE1];
 		if (snare.numSteps <= 0) return;
 
-		int targetStep = getPrimarySnareAnchorTargetStep(family, snare.numSteps);
-		int protectWindow = std::max(1, snare.numSteps / 16);
+		int targetStep = getPrimarySnareAnchorTargetStep(snare, family);
 		int maxSnareHits = normalizedHitLimit(snare.numSteps, 5.f);
 
 		while (countHitsAboveThreshold(snare, 0.55f) > maxSnareHits) {
@@ -1912,11 +2314,13 @@ struct Trigonomicon : Module {
 			for (int step = 0; step < snare.numSteps; ++step) {
 				float value = snare.steps[step];
 				if (value < 0.55f) continue;
-				if (wrapStepDistance(step, targetStep, snare.numSteps) <= protectWindow) continue;
+				float anchorAffinity = getFamilySnareAnchorAffinity(family, step, snare.numSteps);
+				if (anchorAffinity >= 0.55f) continue;
 
 				float keepScore = value;
 				keepScore += getGrooveTargetProbability(family, VOICE_SNARE1, step, snare.numSteps) * 0.75f;
 				keepScore += isStrongBeatStep(step, snare.numSteps) ? 0.15f : 0.f;
+				keepScore += anchorAffinity * 1.60f;
 				keepScore += (1.f - ((float)wrapStepDistance(step, targetStep, snare.numSteps) / (float)snare.numSteps));
 
 				if (keepScore < weakestScore) {
@@ -2102,9 +2506,7 @@ struct Trigonomicon : Module {
 		if (snare.numSteps <= 0) return 1.f;
 
 		float score = 0.f;
-		int targetStep = getPrimarySnareAnchorTargetStep(family, snare.numSteps);
-		int window = std::max(1, snare.numSteps / 16);
-		if (hasPrimarySnareAround(snare, targetStep, window)) score += 1.f;
+		score += computePrimarySnareAnchorCoverage(snare, family);
 		if (countHitsAboveThreshold(snare, 0.55f) <= normalizedHitLimit(snare.numSteps, 5.f)) score += 1.f;
 		if (countHitsAboveThreshold(ghost, 0.18f) <= normalizedHitLimit(ghost.numSteps, 4.f)) score += 1.f;
 		if (hasRepeatingMotif(pattern, 8) || hasRepeatingMotif(pattern, 16)) score += 1.f;
@@ -2193,8 +2595,7 @@ struct Trigonomicon : Module {
 	// Rebuild mutatedPattern buffer from base + donor via segment swap
 	void applySegmentMutation(int currentPattern) {
 		const Pattern& base = PATTERNS[currentPattern];
-		const Pattern& donor = (donorPatternIndex >= 0 && donorPatternIndex < NUM_PATTERNS)
-			? PATTERNS[donorPatternIndex] : base;
+		const Pattern& donor = getActiveDonorPattern(base);
 
 		for (int v = 0; v < NUM_VOICES; v++) {
 			const VoicePattern& baseVP = base.voices[v];
@@ -2226,8 +2627,11 @@ struct Trigonomicon : Module {
 
 				for (int i = segStart; i < segEnd; i++) {
 					if (usesDonor) {
-						// Wrap donor step via modulo if donor has different length
 						int donorStep = i % donorSteps;
+						if (donorUsesTripletPool && donorSteps != baseSteps) {
+							float phase = (float)i / (float)std::max(1, baseSteps);
+							donorStep = std::min(donorSteps - 1, (int)std::floor(phase * donorSteps));
+						}
 						float val = donorVP.steps[donorStep];
 
 						// Keep donor snare imports conservative so mutation adds phrasing
@@ -2365,8 +2769,7 @@ struct Trigonomicon : Module {
 				if (wildMode && wildDepth > 0.80f) {
 					float rerollChance = 0.10f + (wildDepth - 0.80f) * 1.0f; // 10% at 80%, ~30% at 100%
 					if (random::uniform() < rerollChance) {
-						donorPatternIndex = (int)(random::uniform() * NUM_PATTERNS);
-						if (donorPatternIndex >= NUM_PATTERNS) donorPatternIndex = NUM_PATTERNS - 1;
+								chooseFullChaosDonorPattern(currentPattern);
 						rollSegmentThresholds();
 					} else {
 						chooseDonorPattern(currentPattern);
@@ -2511,7 +2914,25 @@ struct Trigonomicon : Module {
 				pendingPatternCvIndex = -1;
 			}
 		} else {
+#ifdef METAMODULE
+			if (mmPatternCvCooldown > 0) --mmPatternCvCooldown;
+			// Guard: applyPatternSelection() is expensive (groove rebuild loops).
+			// A CV source jittering at a boundary would spam it every sample.
+			// Knob changes are already discrete — only CV paths jitter.
+			if (requestedPatternIndex != lastPattern &&
+			    inputs[PATTERN_SELECT_INPUT].isConnected() &&
+			    mmPatternCvCooldown > 0) {
+				// Cooldown active: absorb the change quietly.
+			} else {
+				if (requestedPatternIndex != lastPattern &&
+				    inputs[PATTERN_SELECT_INPUT].isConnected()) {
+					mmPatternCvCooldown = kPatternCvCooldownSamples;
+				}
+				applyPatternSelection(requestedPatternIndex, hasClock);
+			}
+#else
 			applyPatternSelection(requestedPatternIndex, hasClock);
+#endif
 			pendingPatternCvIndex = -1;
 		}
 
@@ -2659,8 +3080,7 @@ struct Trigonomicon : Module {
 						if (wildMode && wildDepth > 0.80f) {
 							float rerollChance = 0.10f + (wildDepth - 0.80f) * 1.0f;
 							if (random::uniform() < rerollChance) {
-								donorPatternIndex = (int)(random::uniform() * NUM_PATTERNS);
-								if (donorPatternIndex >= NUM_PATTERNS) donorPatternIndex = NUM_PATTERNS - 1;
+								chooseFullChaosDonorPattern(patternIndex);
 								rollSegmentThresholds();
 							} else {
 								chooseDonorPattern(patternIndex);
@@ -2736,7 +3156,7 @@ struct Trigonomicon : Module {
 				ratchetSamplesRemaining[v]--;
 			}
 			if (ratchetSamplesRemaining[v] == 0) {
-				float trigDur = ratchetPulseDuration(ratchetIntervalSamples[v], args.sampleTime, 5e-3f);
+				float trigDur = ratchetPulseDuration(ratchetIntervalSamples[v], args.sampleTime, getVoiceTriggerSeconds(v));
 				accentHoldVoltage[v] = ratchetAccentVoltage[v];
 				triggerVoicePulse(v, trigDur);
 				ratchetsRemaining[v]--;
@@ -2760,7 +3180,8 @@ struct Trigonomicon : Module {
 			// so this branch exits immediately with no audible effect.
 			if (bassSlideActive) {
 				bassCurrentCv += (bassTargetCv - bassCurrentCv) * bassSlideCoeff;
-				if (std::abs(bassTargetCv - bassCurrentCv) < 0.0001f) {
+				if (bassSlideSamplesRemaining > 0u) bassSlideSamplesRemaining--;
+				if (bassSlideSamplesRemaining == 0u || std::abs(bassTargetCv - bassCurrentCv) < 0.0001f) {
 					bassCurrentCv = bassTargetCv;
 					bassSlideActive = false;
 				}
@@ -2851,6 +3272,8 @@ struct Trigonomicon : Module {
 			if (donorPatternIndex < 0 || donorPatternIndex >= NUM_PATTERNS)
 				donorPatternIndex = -1;
 		}
+		donorUsesTripletPool = false;
+		donorTripletPatternIndex = -1;
 
 		// Segment thresholds
 		json_t* threshJ = json_object_get(rootJ, "segmentThresholds");
@@ -2903,6 +3326,17 @@ struct Trigonomicon : Module {
 		if (bassThinJ && json_is_number(bassThinJ)) {
 			bassHatThinProbability = math::clamp((float)json_number_value(bassThinJ), 0.50f, 0.70f);
 		}
+
+		for (int index = 0; index < 8; ++index) {
+			bassMotifSemitones[index] = 0;
+		}
+		bassMotifStep = 0;
+		bassMotifLength = 4;
+		bassMotifCyclesLeft = 0;
+		bassMotifCandidateDiv = 2;
+		bassMotifCandidateCount = 0;
+		bassGrooveFamily = (lastPattern >= 0) ? getGrooveFamilyForPattern(lastPattern) : GROOVE_OTHER;
+		generateBassMotif(bassGrooveFamily);
 
 		bassStateInitialized = true;
 		bassSamplesSinceTrigger = 0xffffffffu;
@@ -3044,16 +3478,18 @@ struct TrigonomiconWidget : ModuleWidget {
 		setModule(module);
 
 		// Load the panel from packaged res/
-		setPanel(createPanel(asset::plugin(pluginInstance, "res/trigonomicon.svg")));
-
-#ifndef METAMODULE
-		// PNG faceplate from res/ (canonical location). Keep SVG for correct sizing.
-		std::string panelPath = asset::plugin(pluginInstance, "res/trigonomicon.png");
-		auto* panelBg = new bem::PngPanelBackground(panelPath);
-		panelBg->box.pos = Vec(0, 0);
-		panelBg->box.size = box.size;
-		addChild(panelBg);
-#endif
+	#ifdef METAMODULE
+		setPanel(createPanel(asset::plugin(pluginInstance, "res/Trigonomicon.png")));
+	#else
+		// VCV Rack: no SVG; hardcode 10HP and use PNG directly.
+		box.size = Vec(RACK_GRID_WIDTH * 10, RACK_GRID_HEIGHT);
+		{
+			auto* panelBg = new bem::PngPanelBackground(asset::plugin(pluginInstance, "res/trigonomicon.png"));
+			panelBg->box.pos = Vec(0, 0);
+			panelBg->box.size = box.size;
+			addChild(panelBg);
+		}
+	#endif
 
 		// Layout (10HP = 50.8mm wide). No labels; all text/screen art is on the faceplate PNG.
 		const float centerX = 25.4f;
@@ -3066,15 +3502,21 @@ struct TrigonomiconWidget : ModuleWidget {
 		const float outStartY = 82.0f - controlShiftUpMm;
 		const float outSpacingY = 9.5f;
 		const Vec portShiftPx = Vec(0.f, -10.f);
-		const Vec topInputShiftPx = Vec(0.f, -20.f);
+		const Vec topInputShiftPx = Vec(0.f, -27.f);
 		const Vec knobRowShiftPx = Vec(-6.f, -8.f);
-		const Vec drumOutShiftPx = Vec(0.f, -20.f);
+		const Vec drumOutShiftPx = Vec(0.f, -27.f);
 		const Vec bassRowShiftPx = Vec(0.f, -22.f);
 
 		#ifndef METAMODULE
 			struct TrigonomiconPort : MVXPort {
 				TrigonomiconPort() {
 					imagePath = asset::plugin(pluginInstance, "res/ports/MVXport_silver.png");
+					imageHandle = -1;
+				}
+			};
+			struct TrigonomiconOutputPort : MVXPort {
+				TrigonomiconOutputPort() {
+					imagePath = asset::plugin(pluginInstance, "res/ports/MVXport_silver_red.png");
 					imageHandle = -1;
 				}
 			};
@@ -3085,6 +3527,7 @@ struct TrigonomiconWidget : ModuleWidget {
 			};
 		#else
 			using TrigonomiconPort = MVXPort;
+			using TrigonomiconOutputPort = MVXPort;
 			// MetaModule expects SliderKnob-derived params for addParam().
 			using TrigonomiconKnob = app::SliderKnob;
 		#endif
@@ -3144,7 +3587,7 @@ struct TrigonomiconWidget : ModuleWidget {
 		// Drum outputs (center column)
 		for (int i = 0; i < 6; i++) {
 			float y = outStartY + i * outSpacingY;
-			addOutput(createOutputCentered<TrigonomiconPort>(mm2px(Vec(centerX, y)).plus(portShiftPx).plus(drumOutShiftPx), module, outIds[i]));
+			addOutput(createOutputCentered<TrigonomiconOutputPort>(mm2px(Vec(centerX, y)).plus(portShiftPx).plus(drumOutShiftPx), module, outIds[i]));
 		}
 
 		const float bassOutY = outStartY + 6.f * outSpacingY;
@@ -3155,11 +3598,75 @@ struct TrigonomiconWidget : ModuleWidget {
 		const float accentOutX = box.size.x - 18.f;
 		const float accentOutY = mm2px(Vec(0.f, outStartY + outSpacingY * 2.3f)).y + portShiftPx.y + drumOutShiftPx.y;
 		addInput(createInputCentered<TrigonomiconPort>(Vec(bassRowLeftXPx, bassRowYPx), module, Trigonomicon::CLOCK_RES_INPUT));
-		addOutput(createOutputCentered<TrigonomiconPort>(Vec(bassRowLeftXPx + bassRowSpacingPx, bassRowYPx), module, Trigonomicon::BASS_TRIG_OUTPUT));
-		addOutput(createOutputCentered<TrigonomiconPort>(Vec(bassRowLeftXPx + bassRowSpacingPx * 2.f, bassRowYPx), module, Trigonomicon::BASS_CV_OUTPUT));
+		addOutput(createOutputCentered<TrigonomiconOutputPort>(Vec(bassRowLeftXPx + bassRowSpacingPx, bassRowYPx), module, Trigonomicon::BASS_TRIG_OUTPUT));
+		addOutput(createOutputCentered<TrigonomiconOutputPort>(Vec(bassRowLeftXPx + bassRowSpacingPx * 2.f, bassRowYPx), module, Trigonomicon::BASS_CV_OUTPUT));
 		addInput(createInputCentered<TrigonomiconPort>(Vec(bassRowLeftXPx + bassRowSpacingPx * 3.f, bassRowYPx), module, Trigonomicon::BASS_OCT_INPUT));
 		addInput(createInputCentered<TrigonomiconPort>(Vec(bassRowLeftXPx + bassRowSpacingPx * 4.f, bassRowYPx), module, Trigonomicon::PATTERN_SELECT_INPUT));
-		addOutput(createOutputCentered<TrigonomiconPort>(Vec(accentOutX, accentOutY), module, Trigonomicon::ACCENT_POLY_OUTPUT));
+		addOutput(createOutputCentered<TrigonomiconOutputPort>(Vec(accentOutX, accentOutY), module, Trigonomicon::ACCENT_POLY_OUTPUT));
+
+		#ifndef METAMODULE
+		{
+			const NVGcolor orange = nvgRGB(255, 140, 0);
+			const float fs = 6.5f;
+			const float fsDrum = 13.f;
+			const float upPx = 14.f;  // 3px higher for all port labels
+
+			// Standard label: text centered above portPx
+			auto addLabelPx = [&](Vec portPx, const char* txt) {
+				auto* lbl = new PanelLabel(Vec(portPx.x, portPx.y - upPx - (fs + 4.f) / 2.f),
+					txt, fs, orange, NVG_ALIGN_CENTER);
+				lbl->box.size = Vec(60.f, fs + 4.f);
+				addChild(lbl);
+			};
+
+			// Label with additional pixel offsets (dx = right, dy = down)
+			auto addLabelPxOff = [&](Vec portPx, const char* txt, float dx, float dy) {
+				auto* lbl = new PanelLabel(Vec(portPx.x + dx, portPx.y - upPx - (fs + 4.f) / 2.f + dy),
+					txt, fs, orange, NVG_ALIGN_CENTER);
+				lbl->box.size = Vec(60.f, fs + 4.f);
+				addChild(lbl);
+			};
+
+			// Large label for drum outputs — offset 24px left, 14px lower than standard
+			auto addDrumLabelPx = [&](Vec portPx, const char* txt) {
+				auto* lbl = new PanelLabel(Vec(portPx.x - 24.f, portPx.y - upPx - (fsDrum + 4.f) / 2.f + 14.f),
+					txt, fsDrum, orange, NVG_ALIGN_CENTER);
+				lbl->box.size = Vec(60.f, fsDrum + 4.f);
+				addChild(lbl);
+			};
+
+			// Knob row: all knobs and switches — dy=-1 restores their original height after upPx change
+			addLabelPxOff(mm2px(Vec(clockResSwitchX, knobY)).plus(knobRowShiftPx), "CLKRES", 0.f, -1.f);
+			addLabelPxOff(mm2px(Vec(knobLeftX,        knobY)).plus(knobRowShiftPx), "PAT",    2.f, -1.f);
+			addLabelPxOff(mm2px(Vec(knobCenterX,      knobY)).plus(knobRowShiftPx), "MUTATE", 0.f, -1.f);
+			addLabelPxOff(mm2px(Vec(knobRightX,       knobY)).plus(knobRowShiftPx), "BASS",   0.f, -1.f);
+			addLabelPxOff(mm2px(Vec(wildSwitchX, wildSwitchY)).plus(knobRowShiftPx), "WILD",  0.f, -1.f);
+
+			// Top input row (CLK, FILL, RST, MCV)
+			const float topLabelY = ioRowY;
+			addLabelPx(mm2px(Vec(inRowLeft,                  topLabelY)).plus(portShiftPx).plus(topInputShiftPx), "CLK");
+			addLabelPx(mm2px(Vec(inRowLeft + inSpacing,      topLabelY)).plus(portShiftPx).plus(topInputShiftPx), "FILL");
+			addLabelPx(mm2px(Vec(inRowLeft + inSpacing*2.f,  topLabelY)).plus(portShiftPx).plus(topInputShiftPx), "RST");
+			addLabelPx(mm2px(Vec(inRowLeft + inSpacing*3.f,  topLabelY)).plus(portShiftPx).plus(topInputShiftPx), "MCV");
+
+			// Drum output column (KICK → RIDE) — large font, 15px left, 12px lower
+			const char* drumLabels[] = { "KICK", "SN1", "SN2", "CH", "OH", "RIDE" };
+			for (int i = 0; i < 6; i++) {
+				float y = outStartY + i * outSpacingY;
+				addDrumLabelPx(mm2px(Vec(centerX, y)).plus(portShiftPx).plus(drumOutShiftPx), drumLabels[i]);
+			}
+
+			// Accent output — same spacing above port as CLK/FILL
+			addLabelPx(Vec(accentOutX, accentOutY), "ACC");
+
+			// Bass row (pixel coords)
+			addLabelPx(Vec(bassRowLeftXPx,                          bassRowYPx), "CRS");
+			addLabelPx(Vec(bassRowLeftXPx + bassRowSpacingPx,       bassRowYPx), "BTRIG");
+			addLabelPx(Vec(bassRowLeftXPx + bassRowSpacingPx*2.f,   bassRowYPx), "BCV");
+			addLabelPx(Vec(bassRowLeftXPx + bassRowSpacingPx*3.f,   bassRowYPx), "OCT");
+			addLabelPx(Vec(bassRowLeftXPx + bassRowSpacingPx*4.f,   bassRowYPx), "PAT");
+		}
+		#endif
 
 	}
 };

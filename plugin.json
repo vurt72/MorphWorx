@@ -81,6 +81,26 @@
         "Noise",
         "Granular"
       ]
+    },
+    {
+      "slug": "Ferroklast",
+      "name": "FERROKLAST",
+      "description": "Six-lane FM percussion synth with kick, snares, metallic hats, and chaotic IDM percussion voices",
+      "tags": [
+        "Drum",
+        "FM",
+        "Noise"
+      ]
+    },
+    {
+      "slug": "FerroklastMM",
+      "name": "FERROKLAST MM",
+      "description": "MetaModule-focused Ferroklast variant with reduced voice set and embedded feature cuts",
+      "tags": [
+        "Drum",
+        "FM",
+        "Noise"
+      ]
     }
   ]
 }

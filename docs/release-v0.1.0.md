@@ -24,10 +24,12 @@ The Phaseon1 preset bank (`Phbank.bnk`) and default wavetable (`phaseon1.wav`) a
 
 ### 4ms MetaModule
 1. Install `MorphWorx.mmplugin` via the MetaModule web UI.
-2. Download `MorphWorx-phaseon1-sdcard.zip`, extract it, and copy the `phaseon1/` folder to the **root of your SD card**:
-   - `sdc:/phaseon1/Phbank.bnk` — factory preset bank (auto-loads)
-   - `sdc:/phaseon1/phaseon1.wav` — default wavetable (auto-loads)
-   - `sdc:/phaseon1/xs_*.wav` — optional extra wavetables
+2. Download `MorphWorx-phaseon1-sdcard.zip`, extract it, and copy the `phaseon1/` folder to the volume where your patch lives.
+  Valid locations include:
+  - `sdc:/phaseon1/Phbank.bnk`, `sdc:/phaseon1/phaseon1.wav`, `sdc:/phaseon1/xs_*.wav`
+  - `usb:/phaseon1/Phbank.bnk`, `usb:/phaseon1/phaseon1.wav`, `usb:/phaseon1/xs_*.wav`
+  - `nor:/phaseon1/Phbank.bnk`, `nor:/phaseon1/phaseon1.wav`, `nor:/phaseon1/xs_*.wav`
+3. Phaseon1 searches the current patch volume first, then falls back to the other local volumes.
 
 ---
 
@@ -304,7 +306,7 @@ Phaseon1 ships with a factory wavetable (`phaseon1.wav`) that loads automaticall
 ### Loading a Custom Wavetable
 
 - **VCV Rack:** Right-click the module → **Load Wavetable…**
-- **MetaModule:** Place `.wav` files in `sdc:/phaseon1/` and browse from the module.
+- **MetaModule:** Place `.wav` files in `phaseon1/` on the same volume as the current patch when possible. Phaseon1 browses the current patch volume first, then falls back to `sdc:/`, `usb:/`, and `nor:/`.
 
 ### Wavetable Format
 
@@ -473,7 +475,7 @@ All current parameter values, including per-operator WAVE, FREQ, LEVEL, are writ
 | VCV Rack (Windows) | `%APPDATA%\Rack2\MorphWorx\phaseon1\Phbank.bnk` |
 | VCV Rack (macOS) | `~/Library/Application Support/Rack2/MorphWorx/phaseon1/Phbank.bnk` |
 | VCV Rack (Linux) | `~/.Rack2/MorphWorx/phaseon1/Phbank.bnk` |
-| 4ms MetaModule | `sdc:/phaseon1/Phbank.bnk` |
+| 4ms MetaModule | Current patch volume first, e.g. `sdc:/phaseon1/Phbank.bnk`, `usb:/phaseon1/Phbank.bnk`, or `nor:/phaseon1/Phbank.bnk` |
 
 ---
 

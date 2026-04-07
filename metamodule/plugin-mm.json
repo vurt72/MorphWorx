@@ -33,6 +33,10 @@
         {
             "slug": "Xenostasis",
             "name": "Xenostasis"
+        },
+        {
+            "slug": "FerroklastMM",
+            "name": "FERROKLAST MM"
         }
     ]
 }

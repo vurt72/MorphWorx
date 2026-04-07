@@ -742,15 +742,17 @@ void PfmEngine::buildBlock() {
         float coeff = 3.0f / glideTimeBlocks[idx];
 
         // One-pole lowpass in log-frequency space (= linear in pitch/semitones)
-        float logCurrent = logf(currentFrequency);
-        float logTarget = logf(targetFrequency);
+        // Use the same fast approximations as the EVO/DRIFT paths to avoid
+        // stdlib transcendentals on the ARM audio thread (every block).
+        float logCurrent = logf_fast(currentFrequency);
+        float logTarget = logf_fast(targetFrequency);
         logCurrent += (logTarget - logCurrent) * coeff;
 
         // Snap to target when within ~0.1 cent (inaudible difference)
         if (fabsf(logTarget - logCurrent) < 0.00006f) {
             currentFrequency = targetFrequency;
         } else {
-            currentFrequency = expf(logCurrent);
+            currentFrequency = expf_fast_local(logCurrent);
         }
     }
 

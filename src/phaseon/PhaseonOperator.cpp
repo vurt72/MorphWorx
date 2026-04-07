@@ -118,6 +118,14 @@ static inline float applyPhaseWarp(float phase, float warpAmt) {
     return clampf(warpedPhase, 0.0f, 1.0f);
 }
 
+void Operator::prepareBlock() {
+    // Snapshot block-stable params once so tick() reads from cached ints.
+    // warpMode and tableIndex are stable within a 16-sample block — caching them
+    // here lets the switch dispatch run on register-resident values on ARM.
+    blockWarpMode   = warpMode;
+    blockTableIndex = tableIndex;
+}
+
 void Operator::tick(float fundamentalHz, float modInput, const Wavetable* table, float sampleRate, float currentEnv) {
     // Use precomputed phase increment (set at control rate via cachedPhaseInc)
     const float phaseInc = cachedPhaseInc;
@@ -221,9 +229,9 @@ void Operator::tick(float fundamentalHz, float modInput, const Wavetable* table,
     // PD warp modes — pure ALU, no state, zero cost when pdAmount==0.
     {
         float pdMix = clampf(pdAmount, 0.0f, 1.0f);
-        if (pdMix > 0.0001f && warpMode != 0) {
+        if (pdMix > 0.0001f && blockWarpMode != 0) {
             float warped;
-            switch (warpMode) {
+            switch (blockWarpMode) {
             case 1: warped = warpBendPlus(lookupPhase, pdMix);  break;
             case 2: warped = warpBendMinus(lookupPhase, pdMix); break;
             case 3: warped = warpSync(lookupPhase, pdMix);      break;
@@ -281,7 +289,7 @@ void Operator::tick(float fundamentalHz, float modInput, const Wavetable* table,
         sample = table->sampleMipFast(lookupPhase, framePos, mip);
     } else {
         float p = lookupPhase;
-        switch (tableIndex) {
+        switch (blockTableIndex) {
         default:
         case -1: sample = safeSin01(p); break;
         case -2: {
@@ -483,9 +491,9 @@ void Operator::tick(float fundamentalHz, float modInput, const Wavetable* table,
         // 0 = Off, 1=Bend+, 2=Bend-, 3=Sync, 4=Quantize, 5=Asym, 6=Classic PD hybrid
         float lookupPhase = pmPhase;
         float pdMix = clampf(pdAmount, 0.0f, 1.0f);
-        if (pdMix > 0.0001f && warpMode != 0) {
+        if (pdMix > 0.0001f && blockWarpMode != 0) {
             float warped;
-            switch (warpMode) {
+            switch (blockWarpMode) {
             case 1: warped = warpBendPlus(pmPhase, pdMix);   break;
             case 2: warped = warpBendMinus(pmPhase, pdMix);  break;
             case 3: warped = warpSync(pmPhase, pdMix);       break;
@@ -565,7 +573,7 @@ void Operator::tick(float fundamentalHz, float modInput, const Wavetable* table,
             // -8: Rectified sine
             // -9: Sync saw
             float p = lookupPhase;
-            switch (tableIndex) {
+            switch (blockTableIndex) {
             default:
             case -1: {
                 sample = phaseon_fast_sin_01(p);

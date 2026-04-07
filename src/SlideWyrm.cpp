@@ -46,15 +46,15 @@ struct SlideWyrm : Module {
 		SCALE_PARAM,
 		ROOT_PARAM,
 		OCTAVE_PARAM,
-		STEPS_PARAM,
 		SEED_PARAM,
-		LOCK_SEED_PARAM,
 		MANUAL_REGEN_PARAM,
 		SLIDE_AMT_PARAM,
 		GATE_LEN_PARAM,
+		LOCK_SEED_PARAM,
+		STEPS_PARAM,
+		GATE_MODE_PARAM,
 		ACCENT_SHAPE_PARAM,
 		ACCENT_MODE_PARAM,
-		GATE_MODE_PARAM,
 		PARAMS_LEN
 	};
 	enum InputId {
@@ -846,20 +846,20 @@ struct SlideWyrmDisplay : TransparentWidget {
 struct SlideWyrmWidget : ModuleWidget {
 	SlideWyrmWidget(SlideWyrm* module) {
 		setModule(module);
-		auto* panel = createPanel(asset::plugin(pluginInstance, "res/SlideWyrm.svg"));
-		setPanel(panel);
-		if (panel) {
-			// Faceplate art is now PNG; keep SVG only for sizing.
-			panel->visible = false;
+	#ifdef METAMODULE
+		setPanel(createPanel(asset::plugin(pluginInstance, "res/SlideWyrm.png")));
+	#else
+		// VCV Rack: no SVG; hardcode 12HP and use PNG directly.
+		box.size = Vec(RACK_GRID_WIDTH * 12, RACK_GRID_HEIGHT);
+		{
+			auto* panelBg = new bem::PngPanelBackground(asset::plugin(pluginInstance, "res/SlideWyrm.png"));
+			panelBg->box.pos = Vec(0, 0);
+			panelBg->box.size = box.size;
+			addChild(panelBg);
 		}
+	#endif
 
 #ifndef METAMODULE
-		// PNG faceplate background (drawn on top of the hidden SVG panel).
-		auto* panelBg = new bem::PngPanelBackground(asset::plugin(pluginInstance, "res/SlideWyrm.png"));
-		panelBg->box.pos = Vec(0, 0);
-		panelBg->box.size = box.size;
-		addChild(panelBg);
-
 		struct SlideWyrmPort : MVXPort {
 			SlideWyrmPort() {
 				imagePath = asset::plugin(pluginInstance, "res/ports/MVXport_dark.png");

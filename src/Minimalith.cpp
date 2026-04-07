@@ -24,29 +24,37 @@
 #include <osdialog.h>
 #endif
 #include <map>
+#include <vector>
 
 struct Minimalith : Module {
     enum ParamId {
-        PATCH_PARAM,
-        ALGO_PARAM,
-        VOLUME_PARAM,
-    EVO_TRIM_PARAM,
-    IM_TRIM_PARAM,
-    DRIFT_TRIM_PARAM,
-    TEAR_TRIM_PARAM,
-    TEAR_FOLD_SWITCH_PARAM,
+        // MetaModule-visible controls in panel traversal order.
         LOAD_PARAM,
+        PATCH_PARAM,
+        VOLUME_PARAM,
         PANIC_PARAM,
+        ALGO_PARAM,
+        EVO_TRIM_PARAM,
+        IM_TRIM_PARAM,
+        DRIFT_TRIM_PARAM,
+        TEAR_TRIM_PARAM,
+        TEAR_FOLD_SWITCH_PARAM,
+        OCTAVE_TRIM_PARAM,
+        SC_AMOUNT_PARAM,
+        SC_ATTACK_PARAM,
+        SC_RELEASE_PARAM,
 #ifndef METAMODULE
+        // VCV-only controls after MM-visible ones.
         MORPH_PARAM,
-    PRESET_PREV_PARAM,
-    PRESET_NEXT_PARAM,
+        PRESET_PREV_PARAM,
+        PRESET_NEXT_PARAM,
 #endif
         PARAMS_LEN
     };
     enum InputId {
         GATE_INPUT,
         PITCH_INPUT,
+        SIDECHAIN_INPUT,
         TEAR_INPUT,
         CV1_INPUT,
         CV2_INPUT,
@@ -99,6 +107,7 @@ struct Minimalith : Module {
     std::string bankPath;
     bool engineReady = false;
     float lastSampleRate = 0.0f;
+    float sidechainEnv = 0.0f;
 
 #ifndef METAMODULE
     OneSynthParams currentParams;
@@ -111,6 +120,51 @@ struct Minimalith : Module {
         if (x < 0.0f) x = 0.0f;
         if (x > 1.0f) x = 1.0f;
         return x * x * (3.0f - 2.0f * x);
+    }
+
+#ifdef METAMODULE
+    static std::string mmNormalizeVolumeRoot(std::string volume) {
+        if (volume.empty() || volume == "ram:/" || volume == "ram:") {
+            return std::string();
+        }
+        if (volume.back() != '/') {
+            volume.push_back('/');
+        }
+        return volume;
+    }
+
+    static void mmAppendUniqueString(std::vector<std::string>& values, const std::string& value) {
+        if (value.empty()) return;
+        for (const std::string& existing : values) {
+            if (existing == value) return;
+        }
+        values.push_back(value);
+    }
+
+    static std::vector<std::string> mmVolumeSearchOrder() {
+        std::vector<std::string> volumes;
+        mmAppendUniqueString(volumes, mmNormalizeVolumeRoot(std::string(MetaModule::Patch::get_volume())));
+        mmAppendUniqueString(volumes, std::string("sdc:/"));
+        mmAppendUniqueString(volumes, std::string("usb:/"));
+        mmAppendUniqueString(volumes, std::string("nor:/"));
+        if (volumes.empty()) {
+            volumes.push_back("sdc:/");
+        }
+        return volumes;
+    }
+
+    static std::string mmPreferredVolumeRoot() {
+        std::vector<std::string> volumes = mmVolumeSearchOrder();
+        return volumes.empty() ? std::string("sdc:/") : volumes.front();
+    }
+#endif
+
+    static float mlExpMap01(float x, float minVal, float maxVal) {
+        x = clamp(x, 0.0f, 1.0f);
+        if (minVal <= 0.0f || maxVal <= minVal) {
+            return minVal;
+        }
+        return minVal * std::pow(maxVal / minVal, x);
     }
 
     static inline uint32_t mlXorshift32(uint32_t& state) {
@@ -301,14 +355,7 @@ struct Minimalith : Module {
 
     std::string trimsDbPath() const {
 #ifdef METAMODULE
-        auto normalizeVolume = [](std::string vol) {
-            if (vol.empty()) vol = "sdc:/";
-            if (vol == "ram:/" || vol == "ram:") vol = "sdc:/";
-            if (!vol.empty() && vol.back() != '/') vol.push_back('/');
-            return vol;
-        };
-        std::string vol = normalizeVolume(std::string(MetaModule::Patch::get_volume()));
-        return vol + "minimalith/MinimalithTrims.json";
+        return mmPreferredVolumeRoot() + "minimalith/MinimalithTrims.json";
 #else
         return asset::user("MorphWorx/MinimalithTrims.json");
 #endif
@@ -423,6 +470,18 @@ struct Minimalith : Module {
         }
 
         json_decref(root);
+
+#ifdef METAMODULE
+        // Pre-seed every patch slot so that trimsCaptureCurrentToSlot() in
+        // the audio thread never inserts a new key (which would heap-alloc).
+        if (bankLoader.isLoaded()) {
+            int count = bankLoader.getPatchCount();
+            for (int i = 0; i < count && i < 128; i++) {
+                if (trimBySlot.find(i) == trimBySlot.end())
+                    trimBySlot.emplace(i, TrimState{});
+            }
+        }
+#endif
     }
 
     void trimsSaveForBank() {
@@ -499,16 +558,38 @@ struct Minimalith : Module {
         st.drift = clamp(params[DRIFT_TRIM_PARAM].getValue(), 0.0f, 1.0f);
         st.tear = clamp(params[TEAR_TRIM_PARAM].getValue(), 0.0f, 1.0f);
         st.tearFold = params[TEAR_FOLD_SWITCH_PARAM].getValue() > 0.5f ? 1.0f : 0.0f;
+#ifdef METAMODULE
+        // On MetaModule, only update keys that already exist in the map to
+        // avoid heap allocation in the audio thread. New slots are
+        // pre-seeded by trimsLoadForBank(); dataFromJson() handles the rest.
+        {
+            auto it = trimBySlot.find(slot);
+            if (it != trimBySlot.end()) it->second = st;
+        }
+#else
         trimBySlot[slot] = st;
+#endif
     }
 
     // Edge detectors
     bool lastGate = false;
     float lastNextTrig = 0.0f;
+#ifdef METAMODULE
+    // Debounce RANDOM trigger on MetaModule: loadPatch() + afterNewParamsLoad() is
+    // expensive (~144 ADSR reloads, all LFO reinit). If an envelope is patched into
+    // RANDOM it fires on every rising edge; without a cooldown this causes CPU spikes.
+    // Allow at most one random-patch switch per ~0.5 s (24 000 samples at 48 kHz).
+    static constexpr uint32_t kRandomCooldownSamples = 24000;
+    uint32_t mmRandomCooldown = 0;
+#endif
     bool lastLoadBtn = false;
     bool lastPanicBtn = false;
 #ifndef METAMODULE
     bool lastMorphBtn = false;
+    dsp::SchmittTrigger presetPrevButtonTrigger;
+    dsp::SchmittTrigger presetNextButtonTrigger;
+    static constexpr float kPresetButtonCooldownSeconds = 0.12f;
+    uint32_t presetButtonCooldownRemaining = 0;
 #endif
     float lastPitch = 0.0f;  // Track pitch for retrigger detection
     bool exportTearLegacyFallback = true;
@@ -645,6 +726,30 @@ struct Minimalith : Module {
         std::memcpy(text.data(), buf, n);
         return n;
     }
+
+    std::string metaModuleLoadStartDir() const {
+        return mmPreferredVolumeRoot() + "minimalith/";
+    }
+
+    std::vector<std::string> metaModuleBankLoadCandidates(const std::string& requestedPath) const {
+        std::vector<std::string> candidates;
+        if (MetaModule::Filesystem::is_local_path(requestedPath)) {
+            mmAppendUniqueString(candidates, requestedPath);
+        }
+
+        std::string filename = requestedPath;
+        auto pos = filename.find_last_of("/\\");
+        if (pos != std::string::npos) {
+            filename = filename.substr(pos + 1);
+        }
+        if (!filename.empty()) {
+            for (const std::string& volume : mmVolumeSearchOrder()) {
+                mmAppendUniqueString(candidates, volume + "minimalith/" + filename);
+                mmAppendUniqueString(candidates, volume + "MorphWorx/" + filename);
+            }
+        }
+        return candidates;
+    }
 #endif
 
     Minimalith() {
@@ -654,11 +759,16 @@ struct Minimalith : Module {
         paramQuantities[ALGO_PARAM]->snapEnabled = true;
         configButton(PANIC_PARAM, "Panic / Reset Voice");
         configParam(VOLUME_PARAM, 0.f, 2.f, 1.f, "Volume");
+        configParam(SC_AMOUNT_PARAM, 0.f, 1.f, 0.f, "Sidechain amount");
+        configParam(SC_ATTACK_PARAM, 0.f, 1.f, 0.18f, "Sidechain attack");
+        configParam(SC_RELEASE_PARAM, 0.f, 1.f, 0.38f, "Sidechain release");
         configParam(EVO_TRIM_PARAM, 0.f, 1.f, 0.f, "EVO Trim (manual when EVO jack unplugged)");
         configParam(IM_TRIM_PARAM, 0.f, 1.f, 0.5f, "IM Scan Trim (manual when IM SCAN jack unplugged)");
         configParam(DRIFT_TRIM_PARAM, 0.f, 1.f, 0.5f, "Drift Trim (manual when DRIFT jack unplugged)");
         configParam(TEAR_TRIM_PARAM, 0.f, 1.f, 0.f, "Tear");
         configSwitch(TEAR_FOLD_SWITCH_PARAM, 0.f, 1.f, 1.f, "Tear Fold", {"Off", "On"});
+        configParam(OCTAVE_TRIM_PARAM, -5.f, 5.f, 0.f, "Octave");
+        paramQuantities[OCTAVE_TRIM_PARAM]->snapEnabled = true;
         configButton(LOAD_PARAM, "Load Bank");
 #ifndef METAMODULE
         configButton(MORPH_PARAM, "Morph 2 Random Presets");
@@ -667,6 +777,7 @@ struct Minimalith : Module {
 #endif
         configInput(GATE_INPUT, "Gate");
         configInput(PITCH_INPUT, "V/Oct Pitch");
+        configInput(SIDECHAIN_INPUT, "Sidechain CV (0-10V envelope)");
         configInput(TEAR_INPUT, "Tear CV (-5V..+5V)");
         configInput(CV1_INPUT, "Algorithm CV (-5V..+5V sweeps Algo 1-28)");
         configInput(CV2_INPUT, "IM Scanner CV (-5V..+5V spotlights IM1-IM5)");
@@ -697,42 +808,92 @@ struct Minimalith : Module {
         // If we have a saved bank path, reload it
         if (!bankPath.empty()) {
 #ifdef METAMODULE
-            // On MetaModule, .bnk files live in sdc:/minimalith/ on the SD card.
-            // If the path is already a local MetaModule path, use it as-is.
-            // Otherwise, extract the filename and prepend sdc:/minimalith/.
-            std::string mmPath;
-            if (MetaModule::Filesystem::is_local_path(bankPath)) {
-                mmPath = bankPath;
-            } else {
-                std::string filename = bankPath;
-                auto pos = filename.find_last_of("/\\");
-                if (pos != std::string::npos)
-                    filename = filename.substr(pos + 1);
-                mmPath = "sdc:/minimalith/" + filename;
+            for (const std::string& candidate : metaModuleBankLoadCandidates(bankPath)) {
+                loadBankAndPatch(candidate, currentPatch);
+                if (bankLoader.isLoaded()) {
+                    break;
+                }
             }
-            loadBankAndPatch(mmPath, currentPatch);
 #else
             loadBankAndPatch(bankPath, currentPatch);
 #endif
         }
+        else {
+            tryLoadFactoryDefaultBank();
+        }
     }
+
+    bool tryLoadFactoryDefaultBank() {
+        int startupPatch = std::max(0, currentPatch);
+#ifdef METAMODULE
+        auto tryLoadFactoryPath = [&](const std::string& candidate) {
+            if (candidate.empty()) return false;
+            loadBankAndPatch(candidate, startupPatch);
+            return bankLoader.isLoaded();
+        };
+
+        std::vector<std::string> candidates;
+        for (const std::string& volume : mmVolumeSearchOrder()) {
+            mmAppendUniqueString(candidates, volume + "minimalith/Default.bnk");
+            mmAppendUniqueString(candidates, volume + "MorphWorx/Default.bnk");
+        }
+        for (const std::string& candidate : candidates) {
+            if (tryLoadFactoryPath(candidate)) return true;
+        }
+        return false;
+#else
+        loadBankAndPatch(asset::plugin(pluginInstance, "def/Default.bnk"), startupPatch);
+        return bankLoader.isLoaded();
+#endif
+    }
+
+    #ifdef METAMODULE
+    void loadMetaModuleUserWaveforms(const std::string& path) {
+        auto tryDir = [&](const std::string& dirPath) {
+            if (!dirPath.empty()) {
+                pfm::loadUserWaveformsFromDir(dirPath);
+            }
+        };
+
+        auto tryVolume = [&](const std::string& volumeRoot) {
+            if (volumeRoot.empty()) return;
+            tryDir(volumeRoot + "minimalith/userwaveforms");
+            tryDir(volumeRoot + "MorphWorx/userwaveforms");
+            tryDir(volumeRoot + "morphworx/userwaveforms");
+            tryDir(volumeRoot + "Bemushroomed/userwaveforms");
+            tryDir(volumeRoot + "bemushroomed/userwaveforms");
+            tryDir(volumeRoot + "pfm2/userwaveforms");
+            tryDir(volumeRoot + "pfm2/waveform");
+            tryDir(volumeRoot + "minimalith/waveform");
+        };
+
+        std::string preferredVolume;
+        if (MetaModule::Filesystem::is_local_path(path)) {
+            auto separator = path.find(':');
+            if (separator != std::string::npos) {
+                preferredVolume = mmNormalizeVolumeRoot(path.substr(0, separator + 1));
+            }
+        }
+        if (preferredVolume.empty()) {
+            preferredVolume = mmNormalizeVolumeRoot(std::string(MetaModule::Patch::get_volume()));
+        }
+
+        std::vector<std::string> searchVolumes;
+        mmAppendUniqueString(searchVolumes, preferredVolume);
+        for (const std::string& volume : mmVolumeSearchOrder()) {
+            mmAppendUniqueString(searchVolumes, volume);
+        }
+        for (const std::string& volume : searchVolumes) {
+            tryVolume(volume);
+        }
+    }
+    #endif
 
     void loadBankAndPatch(const std::string& path, int patchIdx) {
         // (Re)load User1..User6 waveforms when loading a bank.
         // Must never do file I/O in the audio thread.
     #ifdef METAMODULE
-        // MetaModule SD card paths. MetaModule file systems may be case-sensitive.
-        // Preferred: match the plugin's VCV folder name (userwaveforms).
-        pfm::loadUserWaveformsFromDir("sdc:/minimalith/userwaveforms");
-        pfm::loadUserWaveformsFromDir("sdc:/MorphWorx/userwaveforms");
-        pfm::loadUserWaveformsFromDir("sdc:/morphworx/userwaveforms");
-        pfm::loadUserWaveformsFromDir("sdc:/Bemushroomed/userwaveforms");
-        pfm::loadUserWaveformsFromDir("sdc:/bemushroomed/userwaveforms");
-        // Some users may keep the legacy PreenFM2 folder name for waveforms.
-        pfm::loadUserWaveformsFromDir("sdc:/pfm2/userwaveforms");
-        // Legacy / compatibility fallbacks
-        pfm::loadUserWaveformsFromDir("sdc:/pfm2/waveform");
-        pfm::loadUserWaveformsFromDir("sdc:/minimalith/waveform");
+        loadMetaModuleUserWaveforms(path);
     #else
         // Prefer plugin-bundled folder so it can ship inside the .vcvplugin.
         // Users can still override by placing files in their Rack user dir.
@@ -868,7 +1029,10 @@ struct Minimalith : Module {
         int count = bankLoader.getPatchCount();
         if (count <= 1) return;
         trimsCaptureCurrentToSlot(currentPatch);
+#ifndef METAMODULE
+        // On MetaModule the audio thread must never do disk I/O.
         trimsSaveForBank();
+#endif
         // Pick a random patch different from current
         int newPatch;
         do {
@@ -1438,6 +1602,7 @@ struct Minimalith : Module {
         if (!engineReady) {
             outputs[LEFT_OUTPUT].setVoltage(0.f);
             outputs[RIGHT_OUTPUT].setVoltage(0.f);
+            sidechainEnv = 0.0f;
             return;
         }
 
@@ -1446,24 +1611,7 @@ struct Minimalith : Module {
             bool loadBtn = params[LOAD_PARAM].getValue() > 0.5f;
             if (loadBtn && !lastLoadBtn) {
 #ifdef METAMODULE
-                if (!loadBrowsing) {
-                    loadBrowsing = true;
-                    async_open_file("sdc:/minimalith/", "bnk,BNK", "Load PreenFM2 Bank",
-                        [this](char *path) {
-                            if (path) {
-                                if (bankLoader.loadBank(path)) {
-                                    bankPath = path;
-                                    currentPatch = 0;
-                                    trimsLoadForBank();
-                                    pendingBankLoad = true;
-                                }
-                                free(path);
-                                MetaModule::Patch::mark_patch_modified();
-                            }
-                            loadBrowsing = false;
-                        }
-                    );
-                }
+                loadRequested = true;
 #else
                 loadRequested = true;
 #endif
@@ -1485,8 +1633,20 @@ struct Minimalith : Module {
 
         // --- Random patch trigger (rising edge) ---
         float nextTrig = inputs[NEXT_TRIG_INPUT].getVoltage();
+#ifdef METAMODULE
+        if (mmRandomCooldown > 0) --mmRandomCooldown;
+#endif
         if (nextTrig >= 1.0f && lastNextTrig < 1.0f) {
+#ifdef METAMODULE
+            // Only allow one patch switch per cooldown window to prevent
+            // a continuous envelope output from spamming loadPatch().
+            if (mmRandomCooldown == 0) {
+                goRandomPatch();
+                mmRandomCooldown = kRandomCooldownSamples;
+            }
+#else
             goRandomPatch();
+#endif
             // Sync patch knob to the random selection
             int count = bankLoader.isLoaded() ? bankLoader.getPatchCount() : 128;
             if (count > 1) {
@@ -1506,12 +1666,15 @@ struct Minimalith : Module {
         }
 
         // --- Preset Prev/Next buttons (rising edge) ---
+        if (presetButtonCooldownRemaining > 0) {
+            presetButtonCooldownRemaining--;
+        }
         if (bankLoader.isLoaded()) {
-            static bool lastPrev = false;
-            static bool lastNext = false;
-            bool prevBtn = params[PRESET_PREV_PARAM].getValue() > 0.5f;
-            bool nextBtn = params[PRESET_NEXT_PARAM].getValue() > 0.5f;
-            if (prevBtn && !lastPrev) {
+            bool prevPressed = presetPrevButtonTrigger.process(params[PRESET_PREV_PARAM].getValue());
+            bool nextPressed = presetNextButtonTrigger.process(params[PRESET_NEXT_PARAM].getValue());
+            uint32_t presetCooldownSamples = std::max<uint32_t>(1u, (uint32_t)std::lround(args.sampleRate * kPresetButtonCooldownSeconds));
+
+            if (prevPressed && presetButtonCooldownRemaining == 0) {
                 trimsCaptureCurrentToSlot(currentPatch);
                 trimsSaveForBank();
                 currentPatch = bankLoader.prevPatch(currentPatch);
@@ -1520,8 +1683,9 @@ struct Minimalith : Module {
                 if (count > 1) {
                     params[PATCH_PARAM].setValue((float)currentPatch / (float)(count - 1));
                 }
+                presetButtonCooldownRemaining = presetCooldownSamples;
             }
-            if (nextBtn && !lastNext) {
+            if (nextPressed && presetButtonCooldownRemaining == 0) {
                 trimsCaptureCurrentToSlot(currentPatch);
                 trimsSaveForBank();
                 currentPatch = bankLoader.nextPatch(currentPatch);
@@ -1530,9 +1694,8 @@ struct Minimalith : Module {
                 if (count > 1) {
                     params[PATCH_PARAM].setValue((float)currentPatch / (float)(count - 1));
                 }
+                presetButtonCooldownRemaining = presetCooldownSamples;
             }
-            lastPrev = prevBtn;
-            lastNext = nextBtn;
         }
 #endif
 
@@ -1545,7 +1708,11 @@ struct Minimalith : Module {
             if (patchIdx >= count) patchIdx = count - 1;
             if (patchIdx != currentPatch) {
                 trimsCaptureCurrentToSlot(currentPatch);
+#ifndef METAMODULE
+                // File I/O in the audio thread — suppress on MetaModule.
+                // Persistence happens via dataToJson() on MetaModule save.
                 trimsSaveForBank();
+#endif
                 currentPatch = patchIdx;
                 loadCurrentPatch();
             }
@@ -1580,6 +1747,8 @@ struct Minimalith : Module {
         // --- Gate + Pitch tracking ---
         bool gate = inputs[GATE_INPUT].getVoltage() >= 1.0f;
         float voct = inputs[PITCH_INPUT].getVoltage();
+        // Apply octave offset trim
+        voct += (float)(int)(params[OCTAVE_TRIM_PARAM].getValue() + (params[OCTAVE_TRIM_PARAM].getValue() >= 0.f ? 0.5f : -0.5f));
 
         // Detect significant pitch change for retrigger (more than 1 semitone)
         float pitchChange = std::abs(voct - lastPitch);
@@ -1764,9 +1933,40 @@ struct Minimalith : Module {
             outR = outR + (wetR - outR) * tearWet;
         }
 
+        float sidechainInput = 0.0f;
+        bool sidechainConnected = inputs[SIDECHAIN_INPUT].isConnected();
+        if (sidechainConnected) {
+            sidechainInput = clamp(inputs[SIDECHAIN_INPUT].getVoltage() * 0.1f, 0.0f, 1.0f);
+        }
+        float sidechainAmount = clamp(params[SC_AMOUNT_PARAM].getValue(), 0.0f, 1.0f);
+        float attackMs = mlExpMap01(params[SC_ATTACK_PARAM].getValue(), 0.5f, 50.0f);
+        float releaseMs = mlExpMap01(params[SC_RELEASE_PARAM].getValue(), 20.0f, 500.0f);
+        float attackCoeff = 1.0f - std::exp(-1.0f / std::max(1.0f, attackMs * 0.001f * args.sampleRate));
+        float releaseCoeff = 1.0f - std::exp(-1.0f / std::max(1.0f, releaseMs * 0.001f * args.sampleRate));
+        if (sidechainInput > sidechainEnv) {
+            sidechainEnv += attackCoeff * (sidechainInput - sidechainEnv);
+        } else {
+            sidechainEnv += releaseCoeff * (sidechainInput - sidechainEnv);
+        }
+        sidechainEnv = clamp(sidechainEnv, 0.0f, 1.0f);
+
         float vol = params[VOLUME_PARAM].getValue(); // 0..2
-        outputs[LEFT_OUTPUT].setVoltage(outL * vol);
-        outputs[RIGHT_OUTPUT].setVoltage(outR * vol);
+        float sidechainShaped = sidechainEnv * sidechainEnv;
+        float sidechainMinGain = 1.0f - sidechainAmount;
+        float sidechainGain = 1.0f - sidechainShaped * sidechainAmount;
+        if (sidechainGain < sidechainMinGain) {
+            sidechainGain = sidechainMinGain;
+        }
+
+        float leftVoltage = outL * vol * sidechainGain;
+        float rightVoltage = outR * vol * sidechainGain;
+        if (sidechainConnected && sidechainAmount > 0.0f) {
+            leftVoltage = clamp(leftVoltage, -10.0f, 10.0f);
+            rightVoltage = clamp(rightVoltage, -10.0f, 10.0f);
+        }
+
+        outputs[LEFT_OUTPUT].setVoltage(leftVoltage);
+        outputs[RIGHT_OUTPUT].setVoltage(rightVoltage);
 
     }
 
@@ -1775,6 +1975,8 @@ struct Minimalith : Module {
 
         // Persist current sidecar trims for the active slot.
         if (bankLoader.isLoaded()) {
+            // Ensure slot key exists before capture (safe here — save/UI thread).
+            trimBySlot.emplace(currentPatch, TrimState{});
             trimsCaptureCurrentToSlot(currentPatch);
             trimsSaveForBank();
         }
@@ -1922,24 +2124,20 @@ struct MinimalithDisplay : TransparentWidget {
 struct MinimalithWidget : ModuleWidget {
     MinimalithWidget(Minimalith* module) {
         setModule(module);
-        auto* panel = createPanel(asset::plugin(pluginInstance, "res/Minimalith.svg"));
-        setPanel(panel);
-
-        // Ensure panel width is actually 16HP (Rack can cache SVG sizes).
+#ifdef METAMODULE
+        setPanel(createPanel(asset::plugin(pluginInstance, "res/Minimalith.png")));
+#else
+        // VCV Rack: no SVG; hardcode 16HP and use PNG directly.
         box.size = Vec(RACK_GRID_WIDTH * 16, RACK_GRID_HEIGHT);
-        if (panel) {
-            panel->box.size = box.size;
-            // Faceplate art is now PNG; keep SVG only for sizing.
-            panel->visible = false;
+        {
+            auto* panelBg = new bem::PngPanelBackground(asset::plugin(pluginInstance, "res/Minimalith.png"));
+            panelBg->box.pos = Vec(0, 0);
+            panelBg->box.size = box.size;
+            addChild(panelBg);
         }
+#endif
 
 #ifndef METAMODULE
-        // PNG faceplate background (drawn on top of the hidden SVG panel).
-    auto* panelBg = new bem::PngPanelBackground(asset::plugin(pluginInstance, "res/Minimalith.png"));
-        panelBg->box.pos = Vec(0, 0);
-        panelBg->box.size = box.size;
-        addChild(panelBg);
-
         struct MinimalithPort : MVXPort {
             MinimalithPort() {
                 imagePath = asset::plugin(pluginInstance, "res/ports/MVXport_silver.png");
@@ -2174,43 +2372,74 @@ struct MinimalithWidget : ModuleWidget {
     #endif
         addInput(createInputCentered<MinimalithPort>(mm2px(Vec(x0, gateY)), module, Minimalith::GATE_INPUT));
         addInput(createInputCentered<MinimalithPort>(mm2px(Vec(x4, gateY)), module, Minimalith::PITCH_INPUT));
-        addChild(createLightCentered<SmallLight<GreenLight>>(mm2px(Vec(x0, gateY + 6.f)), module, Minimalith::GATE_LIGHT));
-
-
+        addParam(createParamCentered<Trimpot>(mm2px(Vec(x4 - 9.0f, gateY)), module, Minimalith::OCTAVE_TRIM_PARAM));
     #ifndef METAMODULE
-        // --- Section title: AUDIO OUT ---
-        // Raise ~3px
-        addChild(mlCreateLabel(Vec(centerX, 116.58f), "A U D I O  O U T", 13.2f, neonGreen));
+        addChild(mlCreateLabel(Vec(x4 - 9.0f, gateLabelY), "OCT", 8.f, neonGreen));
     #endif
+        addChild(createLightCentered<SmallLight<GreenLight>>(mm2px(Vec(x0, gateY + 6.f)), module, Minimalith::GATE_LIGHT));
 
         // --- Outputs ---
         // Raise outputs ~4px
         float outY = 112.17f;
         float outLabelY = outY - 4.f + 4.08f;
         float outPortY = outY + 1.02f + 1.36f + 4.08f;
+        float scCtrlY = outPortY;
+        float scCtrlLabelY = scCtrlY - 4.4f - 3.f * (25.4f / 75.f);
+        float scTrimSpacing = 20.f * (25.4f / 75.f);
+        float scAmtX = x2 - 6.f;
+        float scAtkX = scAmtX + scTrimSpacing;
+        float scRelX = scAtkX + scTrimSpacing;
     #ifndef METAMODULE
         addChild(mlCreateLabel(Vec(x0, outLabelY), "LEFT", 8.5f, neonGreen));
+        addChild(mlCreateLabel(Vec(x1, outLabelY), "SC IN", 7.5f, neonGreen));
         addChild(mlCreateLabel(Vec(x4, outLabelY), "RIGHT", 8.5f, neonGreen));
+        addChild(mlCreateLabel(Vec(scAmtX, scCtrlLabelY), "AMT", 6.8f, neonGreen));
+        addChild(mlCreateLabel(Vec(scAtkX, scCtrlLabelY), "ATK", 6.8f, neonGreen));
+        addChild(mlCreateLabel(Vec(scRelX, scCtrlLabelY), "REL", 6.8f, neonGreen));
     #endif
+        addParam(createParamCentered<Trimpot>(mm2px(Vec(scAmtX, scCtrlY)), module, Minimalith::SC_AMOUNT_PARAM));
+        addParam(createParamCentered<Trimpot>(mm2px(Vec(scAtkX, scCtrlY)), module, Minimalith::SC_ATTACK_PARAM));
+        addParam(createParamCentered<Trimpot>(mm2px(Vec(scRelX, scCtrlY)), module, Minimalith::SC_RELEASE_PARAM));
         addOutput(createOutputCentered<MinimalithPort>(mm2px(Vec(x0, outPortY)), module, Minimalith::LEFT_OUTPUT));
+        addInput(createInputCentered<MinimalithPort>(mm2px(Vec(x1, outPortY)), module, Minimalith::SIDECHAIN_INPUT));
         addOutput(createOutputCentered<MinimalithPort>(mm2px(Vec(x4, outPortY)), module, Minimalith::RIGHT_OUTPUT));
     }
 
-#ifndef METAMODULE
     void step() override {
         ModuleWidget::step();
         Minimalith* mod = dynamic_cast<Minimalith*>(this->module);
         if (mod && mod->loadRequested) {
             mod->loadRequested = false;
+#ifdef METAMODULE
+            if (!mod->loadBrowsing) {
+                mod->loadBrowsing = true;
+                std::string startDir = mod->metaModuleLoadStartDir();
+                async_open_file(startDir.c_str(), "bnk,BNK", "Load PreenFM2 Bank",
+                    [mod](char *path) {
+                        if (path) {
+                            if (mod->bankLoader.loadBank(path)) {
+                                mod->bankPath = path;
+                                mod->currentPatch = 0;
+                                mod->trimsLoadForBank();
+                                mod->pendingBankLoad = true;
+                            }
+                            free(path);
+                            MetaModule::Patch::mark_patch_modified();
+                        }
+                        mod->loadBrowsing = false;
+                    }
+                );
+            }
+#else
             char* path = osdialog_file(OSDIALOG_OPEN, NULL, NULL,
                 osdialog_filters_parse("PreenFM2 Bank:bnk"));
             if (path) {
                 mod->loadBankAndPatch(std::string(path), 0);
                 free(path);
             }
+#endif
         }
     }
-#endif
 
     void appendContextMenu(Menu* menu) override {
         Minimalith* module = dynamic_cast<Minimalith*>(this->module);
@@ -2223,12 +2452,13 @@ struct MinimalithWidget : ModuleWidget {
             [=]() {
 #ifdef METAMODULE
                 // MetaModule: async file browser (runs in GUI context)
-                async_open_file("sdc:/minimalith/", "bnk,BNK", "Load PreenFM2 Bank",
+                async_open_file(module->metaModuleLoadStartDir().c_str(), "bnk,BNK", "Load PreenFM2 Bank",
                     [module](char *path) {
                         if (path) {
                             if (module->bankLoader.loadBank(path)) {
                                 module->bankPath = path;
                                 module->currentPatch = 0;
+                                module->trimsLoadForBank();
                                 module->pendingBankLoad = true;
                             }
                             free(path);

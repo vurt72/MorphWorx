@@ -41,6 +41,23 @@ struct ExtractionPresets {
     }
 };
 
+struct RatchetConfig {
+    float chaosThreshold = 0.6f;
+    float probabilityScale = 1.0f;
+    float densityScale = 1.0f;
+    int minExtras = 1;
+    int maxExtras = 2;
+    bool allowTriplet = false;
+    bool allowReverse = false;
+};
+
+struct FlamConfig {
+    float minChaos = 0.30f;
+    float maxProbability = 0.40f;
+    float phaseOffset = 1.0f / 128.0f;
+    float velocityScale = 0.65f;
+};
+
 // Fixed-size trigger buffer to avoid heap allocation
 struct TriggerBuffer {
     static constexpr int MAX_TRIGGERS = 64;
@@ -71,7 +88,11 @@ public:
                      uint32_t seed = 0);
 
     void applySwing(TriggerBuffer& triggers, float swingAmount, const MetricSpec& metric);
-    void addRatchets(TriggerBuffer& triggers, float chaos, float density, const MetricSpec& metric, uint32_t seed);
+    void addRatchets(TriggerBuffer& triggers, float chaos, float density, const MetricSpec& metric,
+                     uint32_t seed, const RatchetConfig& config = RatchetConfig(),
+                     TriggerBuffer* fillMarkers = nullptr);
+    void applyFlams(TriggerBuffer& triggers, float chaos, const FlamConfig& config,
+                    uint32_t seed, TriggerBuffer* fillMarkers = nullptr);
     static void applyHatChoke(TriggerBuffer& closedHat, TriggerBuffer& openHat, float chokeDist);
     static void applyHatChoke(TriggerBuffer& closedHat, TriggerBuffer& openHat) {
         applyHatChoke(closedHat, openHat, 0.004f);

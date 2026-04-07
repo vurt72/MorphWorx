@@ -10,7 +10,7 @@ Usage:
     pip install Pillow
     python generate_faceplate.py
 
-Output: assets/Trigonomicon.png, assets/SlideWyrm.png
+Output: assets/trigonomicon.png, assets/SlideWyrm.png
 """
 
 import os
@@ -118,11 +118,11 @@ def generate_trigonomicon(fonts, out_dir):
         draw.text(mm_to_px(43, 74 + i * 5.5), ch, fill=DIM_GREEN, font=fonts['output'], anchor="mm")
 
     # Drum labels
-    for i, lbl in enumerate(["KCK", "SN1", "SN2", "CHH", "OHH"]):
+    for i, lbl in enumerate(["KCK", "SN1", "SN2", "CHH", "OHH", "BAS"]):
         y = 72.0 + i * 10.0
         draw.text(mm_to_px(11, y - 2.5), lbl, fill=NEON_GREEN, font=fonts['drum'], anchor="mm")
 
-    out_path = os.path.join(out_dir, 'Trigonomicon.png')
+    out_path = os.path.join(out_dir, 'trigonomicon.png')
     img.save(out_path)
     print(f"Trigonomicon faceplate saved: {out_path} ({TRIG_WIDTH}x{HEIGHT})")
 
@@ -522,6 +522,122 @@ def generate_xenostasis(fonts, out_dir):
     print(f"Xenostasis faceplate saved: {out_path_res} ({XENOSTASIS_WIDTH}x{HEIGHT})")
 
 
+def generate_ferroklast_mm(fonts, out_dir):
+    """
+    FerroklastMM — 24HP MetaModule variant of Ferroklast.
+    6 voices: KICK, SN1, SN2, HH (merged CH/OH), RIDE, CLAP
+    Panel: 121.92mm wide x 128.5mm tall -> 227px x 240px
+
+    Uses the original Ferroklast.png scaled to 24HP as the base image
+    so the visual style matches the full Ferroklast module.
+    """
+    FK_MM_WIDTH_MM = 121.92  # 24HP
+    FK_MM_WIDTH = int(FK_MM_WIDTH_MM * PX_PER_MM)  # ~227px
+
+    # Load and scale the original Ferroklast panel art.
+    # Original is 38HP; we scale uniformly to MetaModule height (240px) which
+    # gives 360px wide (38HP), then scale width to 24HP (227px).
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    orig_path = os.path.join(base_dir, '..', 'res', 'Ferroklast.png')
+    orig = Image.open(orig_path).convert('RGB')
+    # Scale to MetaModule height → 360×240, then resize width to 24HP
+    mm_height_px = HEIGHT  # 240
+    full_w = int(orig.width * mm_height_px / orig.height)  # 38HP in px ≈ 360
+    orig_scaled = orig.resize((full_w, mm_height_px), Image.LANCZOS)
+    # Crop from the left to get the 24HP portion (left-aligned to match voice layout)
+    img = orig_scaled.crop((0, 0, FK_MM_WIDTH, mm_height_px))
+    draw = ImageDraw.Draw(img)
+
+    def px(mm_x, mm_y):
+        return (int(mm_x * PX_PER_MM), int(mm_y * PX_PER_MM))
+
+    # Border + divider lines at macro/grid boundary and trig/out boundary
+    draw_border(draw, FK_MM_WIDTH, lines_y=[43, 91])
+
+    # ── Title ───────────────────────────────────────────────────────────
+    draw.text(px(60.96, 5.5), "FERROKLAST", fill=NEON_GREEN, font=fonts['title'], anchor="mm")
+    draw.text(px(60.96, 10.0), "MM", fill=DIM_GREEN, font=fonts['drum'], anchor="mm")
+
+    # ── Top macro knob section (y=16..40) ────────────────────────────────
+    # 8 macro knobs across, 2 rows — same labels as Rack build minus REVERB
+    macro_top_y    = 22.0
+    macro_bot_y    = 35.0
+    macro_label_top = 16.5
+    macro_label_bot = 29.5
+    # Spacing: 8 knobs across 110mm centred at 60.96mm
+    macro_start_x = 8.5
+    macro_step    = 13.4
+    top_labels = ["RUMBLE", "PUNCH", "BODY", "COLOR", "SNAP", "NOISE", "TRANS", "MATRL"]
+    bot_labels = ["CURVE",  "ATK T", "PTCH", "SN RES","SN CUT","SN DRV","RUIN", "DRIVE"]
+    for i in range(8):
+        x = macro_start_x + i * macro_step
+        draw.text(px(x, macro_label_top), top_labels[i], fill=DIM_GREEN, font=fonts['small'], anchor="mm")
+        draw.text(px(x, macro_label_bot), bot_labels[i], fill=DIM_GREEN, font=fonts['small'], anchor="mm")
+        # Small dot to indicate knob position
+        cx, cy = px(x, macro_top_y)
+        draw.ellipse([cx-3, cy-3, cx+3, cy+3], outline=NEON_GREEN, width=1)
+        cx, cy = px(x, macro_bot_y)
+        draw.ellipse([cx-3, cy-3, cx+3, cy+3], outline=NEON_GREEN, width=1)
+
+    # ── 6 Voice columns (y=44..90) ───────────────────────────────────────
+    voice_labels = ["KICK", "SN1", "SN2", "HH", "RIDE", "CLAP"]
+    # 6 columns spanning x=10..115, step=21mm
+    col_start = 10.5
+    col_step  = 20.5
+    col_xs = [col_start + i * col_step for i in range(6)]
+
+    row_labels = ["LVL", "TUN", "DEC", "VAR", "TRA", "TTY", "TDC"]
+    row_start_y = 54.0
+    row_step    = 5.2
+
+    for i, (lbl, x) in enumerate(zip(voice_labels, col_xs)):
+        # Voice name headline
+        draw.text(px(x, 47.0), lbl, fill=NEON_GREEN, font=fonts['drum'], anchor="mm")
+        # 7 trimpot rows
+        for r, rl in enumerate(row_labels):
+            y = row_start_y + r * row_step
+            draw.text(px(x, y), rl, fill=DIM_GREEN, font=fonts['small'], anchor="mm")
+            dot_x, dot_y = px(x, y + 2.2)
+            draw.ellipse([dot_x-2, dot_y-2, dot_x+2, dot_y+2], outline=NEON_GREEN, width=1)
+
+    # ── Trigger inputs + Audio outputs (y=92..128) ───────────────────────
+    trig_y = 99.0
+    out_y  = 117.0
+    for i, (lbl, x) in enumerate(zip(voice_labels, col_xs)):
+        draw.text(px(x, trig_y - 5.0), "TRIG", fill=DIM_GREEN, font=fonts['small'], anchor="mm")
+        draw.text(px(x, trig_y), lbl,  fill=NEON_GREEN, font=fonts['label'], anchor="mm")
+        # Port circle
+        dot_x, dot_y = px(x, trig_y + 3.5)
+        draw.ellipse([dot_x-4, dot_y-4, dot_x+4, dot_y+4], outline=NEON_GREEN, width=1)
+        draw.text(px(x, out_y - 4.0), "OUT", fill=DIM_GREEN, font=fonts['small'], anchor="mm")
+        dot_x, dot_y = px(x, out_y + 1.0)
+        draw.ellipse([dot_x-4, dot_y-4, dot_x+4, dot_y+4], fill=NEON_GREEN)
+
+    # ── Right mini CV column (x=118mm) ───────────────────────────────────
+    cv_x    = 117.5
+    cv_y0   = 48.0
+    cv_step = 7.5
+    cv_labels = ["ACC", "DEC", "CLR", "BDY", "PCH", "SNP", "VAR", "RMB"]
+    for r, lbl in enumerate(cv_labels):
+        y = cv_y0 + r * cv_step
+        draw.text(px(cv_x, y), lbl, fill=DIM_GREEN, font=fonts['small'], anchor="mm")
+        dot_x, dot_y = px(cv_x, y + 2.5)
+        draw.ellipse([dot_x-2, dot_y-2, dot_x+2, dot_y+2], outline=NEON_GREEN, width=1)
+
+    # SC/GRV outputs and DUCK block at bottom-right
+    draw.text(px(cv_x, cv_y0 + 8 * cv_step + 1.0), "SC",  fill=DIM_GREEN, font=fonts['small'], anchor="mm")
+    draw.text(px(cv_x, cv_y0 + 9 * cv_step - 1.0), "GRV", fill=DIM_GREEN, font=fonts['small'], anchor="mm")
+
+    # Write to assets/res and assets root
+    res_dir = os.path.join(out_dir, 'res')
+    os.makedirs(res_dir, exist_ok=True)
+    out_path_res  = os.path.join(res_dir, 'FerroklastMM.png')
+    out_path_root = os.path.join(out_dir, 'FerroklastMM.png')
+    img.save(out_path_res)
+    img.save(out_path_root)
+    print(f"FerroklastMM faceplate saved: {out_path_res} ({FK_MM_WIDTH}x{HEIGHT})")
+
+
 if __name__ == '__main__':
     base_dir = os.path.dirname(__file__)
     out_dir = os.path.join(base_dir, 'assets')
@@ -535,5 +651,6 @@ if __name__ == '__main__':
     generate_amenolith(fonts, out_dir)
     generate_phaseon(fonts, out_dir)
     generate_xenostasis(fonts, out_dir)
+    generate_ferroklast_mm(fonts, out_dir)
 
     print(f"\n✓ All faceplates generated. Resolution: {PX_PER_MM:.4f} px/mm")

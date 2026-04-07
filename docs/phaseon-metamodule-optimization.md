@@ -128,15 +128,15 @@ To get Phaseon to Minimalith-level CPU (~25%), a near-complete rewrite of the in
 
 Key files for implementation:
 
-- `src/phaseon/PhaseonVoice.hpp` — main per-sample `tick()`, envelope processing, operator routing
 - `src/phaseon/PhaseonOperator.cpp` — operator inner loop (MetaModule fast path `#ifdef METAMODULE`)
 - `src/phaseon/PhaseonWavetable.cpp` — wavetable generation (table sizes defined here)
-- `src/phaseon/PhaseonMacros.hpp` — `applyMacros()`, `SpectralTilt`, macro state arrays
-- `src/phaseon/PhaseonPolish.hpp` — `OutputPolish` post-processing
-- `src/phaseon/PhaseonAlgorithm.hpp` — FM algorithm definitions (hardcoded 6-op, `isCarrier[6]`)
-- `src/Phaseon.cpp` — module wrapper, process(), preset system
+- `src/Phaseon1.cpp` — current module wrapper, process(), preset system
 - `metamodule/CMakeLists.txt` — source file list for MetaModule build
 - `src/plugin.cpp` / `src/plugin.hpp` — model registration
+
+Legacy note:
+
+- Older files referenced during the Feb 2026 optimization pass, including `src/phaseon/PhaseonVoice.hpp`, `src/phaseon/PhaseonMacros.hpp`, `src/phaseon/PhaseonPolish.hpp`, `src/phaseon/PhaseonAlgorithm.hpp`, and `src/Phaseon.cpp`, are no longer present in the current tree.
 
 ---
 
@@ -146,3 +146,8 @@ Key files for implementation:
 - All `#ifdef METAMODULE` optimization code is still in the source files (harmless, not compiled)
 - VCV Rack build is **unaffected** — full 6-op Phaseon with all features
 - The optimization `#ifdef` blocks can be used as a starting point if revisited
+
+## Cleanup Follow-up (Apr 2026)
+
+- Legacy wrapper file references were normalized to the current `Phaseon1` layout.
+- No live build-system references to `src/Phaseon.cpp`, `src/DrumTrigger.cpp`, `src/BreakcoreDrums.cpp`, or `tools/update_phaseon_lfos.py` remain in the current tree.

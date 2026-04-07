@@ -15,3 +15,12 @@ TXT format:
 
 Minimalith behavior:
   - If a preset references User1..User6 and the required file is missing, the preset is hard-muted.
+
+MetaModule placement:
+  - Put user waveforms on the same volume as the patch when possible.
+  - Minimalith searches the current patch volume first, then falls back to sdc:/, usb:/, and nor:/.
+  - Recognized directories include:
+    - minimalith/userwaveforms
+    - MorphWorx/userwaveforms
+    - pfm2/userwaveforms
+    - pfm2/waveform

@@ -534,6 +534,11 @@ float panTable[] = {
 unsigned int voiceIndex;
 
 Timbre::Timbre() {
+    // Zero-initialize params before any method (Start(), setNewBPMValue(), etc.)
+    // accesses params.engineArp2.division or params.engineArp1.direction.
+    // Without this, those fields hold garbage heap values which cause
+    // out-of-bounds array access and a crash (signal 11) on construction.
+    memset(&this->params, 0, sizeof(this->params));
 
 
     this->recomputeNext = true;

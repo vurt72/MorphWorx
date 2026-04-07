@@ -139,89 +139,104 @@ $deployedPath = Join-Path $DestDir ([System.IO.Path]::GetFileName($SourceFile))
 Assert-FileExists $deployedPath 'Deployed mmplugin file'
 
 # Copy shared resources (user waveforms, default wavetables) onto the SD card.
-try {
-  $userWfSrc = Join-Path $repoRoot 'userwaveforms'
-  if (Test-Path -LiteralPath $userWfSrc -PathType Container) {
-    $sdRoot = Split-Path -Qualifier $DestDir  # e.g. F:
+$sdRoot = Split-Path -Qualifier $DestDir  # e.g. F:
+$userWfSrc = Join-Path $repoRoot 'userwaveforms'
+Assert-DirExists $userWfSrc 'Minimalith userwaveforms source folder'
 
-    # Phaseon1 data directory (used for default wavetable + preset bank)
-    $phaseonDir = Join-Path $sdRoot 'phaseon1'
-    if (-not (Test-Path -LiteralPath $phaseonDir -PathType Container)) {
-      New-Item -ItemType Directory -Path $phaseonDir -Force | Out-Null
-    }
+# Phaseon1 data directory (used for default wavetable + preset bank)
+$phaseonDir = Join-Path $sdRoot 'phaseon1'
+if (-not (Test-Path -LiteralPath $phaseonDir -PathType Container)) {
+  New-Item -ItemType Directory -Path $phaseonDir -Force | Out-Null
+}
 
-    # Minimalith user waveforms: preferred location sdc:/minimalith/userwaveforms
-    $mmUserDir = Join-Path $sdRoot 'minimalith\userwaveforms'
-    if (-not (Test-Path -LiteralPath $mmUserDir -PathType Container)) {
-      New-Item -ItemType Directory -Path $mmUserDir -Force | Out-Null
-    }
-    Copy-Item -Path (Join-Path $userWfSrc '*') -Destination $mmUserDir -Recurse -Force
+# Minimalith preferred runtime directories.
+$minimalithDir = Join-Path $sdRoot 'minimalith'
+if (-not (Test-Path -LiteralPath $minimalithDir -PathType Container)) {
+  New-Item -ItemType Directory -Path $minimalithDir -Force | Out-Null
+}
 
-    # Additional aliases some firmware builds may look for.
-    $altUserDirs = @(
-      (Join-Path $sdRoot 'MorphWorx\userwaveforms'),
-      (Join-Path $sdRoot 'morphworx\userwaveforms'),
-      (Join-Path $sdRoot 'Bemushroomed\userwaveforms'),
-      (Join-Path $sdRoot 'bemushroomed\userwaveforms')
-    )
-    foreach ($d in $altUserDirs) {
-      if (-not (Test-Path -LiteralPath $d -PathType Container)) {
-        New-Item -ItemType Directory -Path $d -Force | Out-Null
-      }
-      Copy-Item -Path (Join-Path $userWfSrc '*') -Destination $d -Recurse -Force
-    }
+$mmUserDir = Join-Path $minimalithDir 'userwaveforms'
+if (-not (Test-Path -LiteralPath $mmUserDir -PathType Container)) {
+  New-Item -ItemType Directory -Path $mmUserDir -Force | Out-Null
+}
+Copy-Item -Path (Join-Path $userWfSrc '*') -Destination $mmUserDir -Recurse -Force
 
-    # Phaseon1 default wavetable: sdc:/phaseon1/phaseon1.wav
-    $phaseonWtSrc = Join-Path $userWfSrc 'phaseon1.wav'
-    if (Test-Path -LiteralPath $phaseonWtSrc -PathType Leaf) {
-      $phaseonDest = Join-Path $phaseonDir 'phaseon1.wav'
-      Copy-Item -LiteralPath $phaseonWtSrc -Destination $phaseonDest -Force
-    }
+$defaultBankSrc = Join-Path $repoRoot 'def\Default.bnk'
+Assert-FileExists $defaultBankSrc 'Minimalith factory bank source file'
+$defaultBankDest = Join-Path $minimalithDir 'Default.bnk'
+Copy-Item -LiteralPath $defaultBankSrc -Destination $defaultBankDest -Force
 
-    # Phaseon1 preset bank: copy the newest Rack-side bank to SD so MetaModule
-    # and Rack use the same user-created preset bank.
-    $bankCandidates = @(
-      (Join-Path $env:LOCALAPPDATA 'Rack2\MorphWorx\phaseon1\Phbank.bnk'),
-      (Join-Path $env:LOCALAPPDATA 'Rack2\MorphWorx\phaseon1\phbank.bnk'),
-      (Join-Path $env:APPDATA 'Rack2\MorphWorx\phaseon1\Phbank.bnk'),
-      (Join-Path $env:APPDATA 'Rack2\MorphWorx\phaseon1\phbank.bnk')
-    )
+# Additional aliases some firmware builds or paths may look for.
+$altUserDirs = @(
+  (Join-Path $sdRoot 'MorphWorx\userwaveforms'),
+  (Join-Path $sdRoot 'morphworx\userwaveforms'),
+  (Join-Path $sdRoot 'Bemushroomed\userwaveforms'),
+  (Join-Path $sdRoot 'bemushroomed\userwaveforms')
+)
+foreach ($d in $altUserDirs) {
+  if (-not (Test-Path -LiteralPath $d -PathType Container)) {
+    New-Item -ItemType Directory -Path $d -Force | Out-Null
+  }
+  Copy-Item -Path (Join-Path $userWfSrc '*') -Destination $d -Recurse -Force
+}
 
-    $bankFiles = @()
-    foreach ($cand in $bankCandidates) {
-      if ($cand -and (Test-Path -LiteralPath $cand -PathType Leaf)) {
-        $bankFiles += Get-Item -LiteralPath $cand
-      }
-    }
+$morphWorxDir = Join-Path $sdRoot 'MorphWorx'
+if (-not (Test-Path -LiteralPath $morphWorxDir -PathType Container)) {
+  New-Item -ItemType Directory -Path $morphWorxDir -Force | Out-Null
+}
+$morphWorxDefaultBankDest = Join-Path $morphWorxDir 'Default.bnk'
+Copy-Item -LiteralPath $defaultBankSrc -Destination $morphWorxDefaultBankDest -Force
 
-    if ($bankFiles.Count -gt 0) {
-      $preferredRackBank = 'C:\Users\vurt7\AppData\Local\Rack2\MorphWorx\phaseon1\phbank.bnk'
-      $latestBank = $null
-      if (Test-Path -LiteralPath $preferredRackBank -PathType Leaf) {
-        $latestBank = Get-Item -LiteralPath $preferredRackBank
-      }
-      if (-not $latestBank) {
-        $latestBank = $bankFiles | Sort-Object -Property LastWriteTime -Descending | Select-Object -First 1
-      }
+Assert-FileExists (Join-Path $mmUserDir 'USR1.BIN') 'Deployed Minimalith USR1.BIN'
+Assert-FileExists (Join-Path $mmUserDir 'USR2.BIN') 'Deployed Minimalith USR2.BIN'
+Assert-FileExists (Join-Path $mmUserDir 'USR3.BIN') 'Deployed Minimalith USR3.BIN'
+Assert-FileExists (Join-Path $mmUserDir 'USR4.BIN') 'Deployed Minimalith USR4.BIN'
+Assert-FileExists (Join-Path $mmUserDir 'USR5.BIN') 'Deployed Minimalith USR5.BIN'
+Assert-FileExists (Join-Path $mmUserDir 'USR6.BIN') 'Deployed Minimalith USR6.BIN'
+Assert-FileExists $defaultBankDest 'Deployed Minimalith Default.bnk'
 
-      $phaseonBankDest = Join-Path $phaseonDir 'Phbank.bnk'
-      Copy-Item -LiteralPath $latestBank.FullName -Destination $phaseonBankDest -Force
-      Write-Host "Copied Phaseon1 bank to SD: $($latestBank.FullName) -> $phaseonBankDest" -ForegroundColor Green
+# Phaseon1 default wavetable: sdc:/phaseon1/phaseon1.wav
+$phaseonWtSrc = Join-Path $userWfSrc 'phaseon1.wav'
+if (Test-Path -LiteralPath $phaseonWtSrc -PathType Leaf) {
+  $phaseonDest = Join-Path $phaseonDir 'phaseon1.wav'
+  Copy-Item -LiteralPath $phaseonWtSrc -Destination $phaseonDest -Force
+}
 
-      $morphWorxDir = Join-Path $sdRoot 'MorphWorx'
-      if (-not (Test-Path -LiteralPath $morphWorxDir -PathType Container)) {
-        New-Item -ItemType Directory -Path $morphWorxDir -Force | Out-Null
-      }
-      $morphWorxBankDest = Join-Path $morphWorxDir 'phbank.bnk'
-      Copy-Item -LiteralPath $latestBank.FullName -Destination $morphWorxBankDest -Force
-      Write-Host "Copied Phaseon1 bank to MorphWorx folder: $($latestBank.FullName) -> $morphWorxBankDest" -ForegroundColor Green
-    } else {
-      Write-Host "Warning: no Rack-side Phaseon1 bank found to copy (looked in AppData Rack2 paths)." -ForegroundColor Yellow
-    }
+# Phaseon1 preset bank: copy the newest Rack-side bank to SD so MetaModule
+# and Rack use the same user-created preset bank.
+$bankCandidates = @(
+  (Join-Path $env:LOCALAPPDATA 'Rack2\MorphWorx\phaseon1\Phbank.bnk'),
+  (Join-Path $env:LOCALAPPDATA 'Rack2\MorphWorx\phaseon1\phbank.bnk'),
+  (Join-Path $env:APPDATA 'Rack2\MorphWorx\phaseon1\Phbank.bnk'),
+  (Join-Path $env:APPDATA 'Rack2\MorphWorx\phaseon1\phbank.bnk')
+)
+
+$bankFiles = @()
+foreach ($cand in $bankCandidates) {
+  if ($cand -and (Test-Path -LiteralPath $cand -PathType Leaf)) {
+    $bankFiles += Get-Item -LiteralPath $cand
   }
 }
-catch {
-  Write-Host "Warning: failed to copy MetaModule resource files: $($_.Exception.Message)" -ForegroundColor Yellow
+
+if ($bankFiles.Count -gt 0) {
+  $preferredRackBank = 'C:\Users\vurt7\AppData\Local\Rack2\MorphWorx\phaseon1\phbank.bnk'
+  $latestBank = $null
+  if (Test-Path -LiteralPath $preferredRackBank -PathType Leaf) {
+    $latestBank = Get-Item -LiteralPath $preferredRackBank
+  }
+  if (-not $latestBank) {
+    $latestBank = $bankFiles | Sort-Object -Property LastWriteTime -Descending | Select-Object -First 1
+  }
+
+  $phaseonBankDest = Join-Path $phaseonDir 'Phbank.bnk'
+  Copy-Item -LiteralPath $latestBank.FullName -Destination $phaseonBankDest -Force
+  Write-Host "Copied Phaseon1 bank to SD: $($latestBank.FullName) -> $phaseonBankDest" -ForegroundColor Green
+
+  $morphWorxBankDest = Join-Path $morphWorxDir 'phbank.bnk'
+  Copy-Item -LiteralPath $latestBank.FullName -Destination $morphWorxBankDest -Force
+  Write-Host "Copied Phaseon1 bank to MorphWorx folder: $($latestBank.FullName) -> $morphWorxBankDest" -ForegroundColor Green
+} else {
+  Write-Host "Warning: no Rack-side Phaseon1 bank found to copy (looked in AppData Rack2 paths)." -ForegroundColor Yellow
 }
 
 Write-Host "Deploy complete." -ForegroundColor Green

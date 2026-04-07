@@ -1248,27 +1248,40 @@ struct XsDubstepSVF {
 
 struct Xenostasis : Module {
     enum ParamId {
+        // =====================================================================
+        // v0.2 BREAKING CHANGE: params reordered to match MetaModule panel
+        // layout (top-to-bottom, left-to-right scan).
+        // =====================================================================
+
+        // Row 2 (y≈25mm): PITCH | TABLE | CHAOS | STABILITY | HOMEOSTASIS
         PITCH_PARAM,
+        TABLE_PARAM,
         CHAOS_PARAM,
         STABILITY_PARAM,
         HOMEOSTASIS_PARAM,
+
+        // Row 3 (y≈40mm): TEAR | PUNCH | CROSS | DENSITY | BBCHAR
+        TEAR_PARAM,
+        PUNCH_PARAM,
         CROSS_PARAM,
         DENSITY_PARAM,
-        TABLE_PARAM,
         BBCHAR_PARAM,
+
+        // Row 4 (y≈55mm): BBVOL | WTVOL | FMVOL | DRIVE | BBMODE
         BBVOL_PARAM,
-        BBMODE_PARAM,
-        BBPITCH_PARAM,
-        DECAY_PARAM,
-        PUNCH_PARAM,
         WTVOL_PARAM,
-        DRIVE_PARAM,
         FMVOL_PARAM,
+        DRIVE_PARAM,
+        BBMODE_PARAM,
+
+        // Row 4b (y≈70mm): BBPITCH | CUTOFF | RES | MODE-SW | DECAY | FRAME
+        BBPITCH_PARAM,
         FILTER_CUTOFF_PARAM,
         FILTER_RESONANCE_PARAM,
         FILTER_MODE_PARAM,
-        TEAR_PARAM,
+        DECAY_PARAM,
         FRAME_SCROLL_PARAM,
+
         PARAMS_LEN
     };
     enum InputId {
@@ -1424,11 +1437,7 @@ struct Xenostasis : Module {
     float cachedMod2Index = 0.f;      // Drone FM 2nd modulator index
     float cachedSatAmount = 1.f;      // Drone FM saturation amount
 
-#ifdef METAMODULE
-    // MetaModule may instantiate modules during plugin scan; avoid doing any
-    // heavy allocation/generation work in the constructor.
-    bool bankInitAttempted = false;
-#endif
+
 
 #ifdef METAMODULE
     // Fast math helpers for embedded target
@@ -1556,8 +1565,11 @@ struct Xenostasis : Module {
     #ifndef METAMODULE
         bank = xsAcquireBank();
     #else
-        // Initialize sin LUT once in constructor (not per-call)
+        // Initialize sin LUT and allocate shared wavetable bank in the
+        // constructor (UI/load thread), NOT lazily in process(). This
+        // prevents a first-call heap allocation on the audio thread.
         xsInitSinLut();
+        bank = xsAcquireBank();
     #endif
 
         // Pre-compute sample-rate-dependent coefficients
@@ -1695,14 +1707,6 @@ struct Xenostasis : Module {
     void process(const ProcessArgs& args) override {
         sampleRate = args.sampleRate;
         float dt = 1.f / sampleRate;
-
-#ifdef METAMODULE
-        // Lazy init: do the shared bank allocate/generate only once we are actually running.
-        if (__builtin_expect(!bank && !bankInitAttempted, 0)) {
-            bankInitAttempted = true;
-            bank = xsAcquireBank();
-        }
-#endif
 
         // ── 1. Read params + CVs ──
         float pitchV = params[PITCH_PARAM].getValue();
@@ -2792,16 +2796,18 @@ using XenostasisOutPort = MVXPort;
 struct XenostasisWidget : ModuleWidget {
     XenostasisWidget(Xenostasis* module) {
         setModule(module);
-        setPanel(createPanel(asset::plugin(pluginInstance, "res/Xenostasis.svg")));
-
-#ifndef METAMODULE
-        auto* panelBg = new bem::PngPanelBackground(asset::plugin(pluginInstance, "res/Xenostasis.png"));
-        panelBg->box.pos = Vec(0, 0);
-        panelBg->box.size = box.size;
-    // Default is Cover; top-align so if there's any mismatch, it crops from the bottom
-    // (preserving the top headline artwork).
-    panelBg->alignY = 0.f;
-        addChild(panelBg);
+#ifdef METAMODULE
+        setPanel(createPanel(asset::plugin(pluginInstance, "res/Xenostasis.png")));
+#else
+        // VCV Rack: no SVG; hardcode 16HP and use PNG directly.
+        box.size = Vec(RACK_GRID_WIDTH * 16, RACK_GRID_HEIGHT);
+        {
+            auto* panelBg = new bem::PngPanelBackground(asset::plugin(pluginInstance, "res/Xenostasis.png"));
+            panelBg->box.pos = Vec(0, 0);
+            panelBg->box.size = box.size;
+            panelBg->alignY = 0.f;
+            addChild(panelBg);
+        }
 #endif
 
         // Screws

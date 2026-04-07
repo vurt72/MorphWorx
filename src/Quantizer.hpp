@@ -151,8 +151,14 @@ static const Scale scales[] = {
 
 static const int NUM_SCALES = 31;
 
+#if defined(__GNUC__) || defined(__clang__)
+#define MORPHWORX_MAYBE_UNUSED __attribute__((unused))
+#else
+#define MORPHWORX_MAYBE_UNUSED
+#endif
+
 // Scale names
-static const char* scale_names[] = {
+static const char* scale_names[] MORPHWORX_MAYBE_UNUSED = {
     "Chromatic",
     "Major",
     "Minor",
@@ -187,9 +193,11 @@ static const char* scale_names[] = {
 };
 
 // Note names
-static const char* note_names[] = {
+static const char* note_names[] MORPHWORX_MAYBE_UNUSED = {
     "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"
 };
+
+#undef MORPHWORX_MAYBE_UNUSED
 
 // Simple quantizer class
 class Quantizer {

@@ -1,14 +1,11 @@
 #include "DrumKits.h"
 
+#include "../plugin.hpp"
 #include <cmath>
-
-#ifdef METAMODULE
-#include "plugin.hpp"
 #include <cstdio>
 #include <cstring>
 #include <string>
 #include <vector>
-#endif
 
 namespace bdkit {
 
@@ -39,7 +36,6 @@ static inline uint32_t xorshift32(uint32_t& s) {
     return s;
 }
 
-#ifdef METAMODULE
 static inline uint16_t rd16(const uint8_t* p) {
     return (uint16_t)(p[0] | (p[1] << 8));
 }
@@ -137,17 +133,28 @@ static const char* filePrefixForInst(int inst) {
     }
 }
 
-static bool initBundledKit01() {
-    static std::vector<int16_t> pcm[NUM_INST][NUM_LAYERS];
-    static uint32_t sr[NUM_INST][NUM_LAYERS] = {};
+static bool initBundledKits() {
+    // Persistent storage for all loaded PCM data.
+    static std::vector<int16_t> pcm[NUM_KITS][NUM_INST][NUM_LAYERS];
+    static uint32_t sr[NUM_KITS][NUM_INST][NUM_LAYERS] = {};
 
-    for (int inst = 0; inst < NUM_INST; ++inst) {
-        for (int layer = 0; layer < NUM_LAYERS; ++layer) {
-            std::string fn = std::string(filePrefixForInst(inst)) + "_" + std::to_string(layer + 1) + ".wav";
-            std::string rel = std::string("samples/amenolith/Kit01/") + fn;
-            std::string path = asset::plugin(pluginInstance, rel);
-            if (!loadWavMonoPcm16(path, pcm[inst][layer], sr[inst][layer])) {
-                return false;
+#ifdef METAMODULE
+    const std::string base = "samples/amenolith/";
+#else
+    const std::string base = "res/samples/amenolith/";
+#endif
+
+    for (int k = 0; k < NUM_KITS; ++k) {
+        char kitDir[8];
+        std::snprintf(kitDir, sizeof(kitDir), "Kit%02d/", k + 1);
+        for (int inst = 0; inst < NUM_INST; ++inst) {
+            for (int layer = 0; layer < NUM_LAYERS; ++layer) {
+                std::string fn = std::string(filePrefixForInst(inst)) + "_" + std::to_string(layer + 1) + ".wav";
+                std::string rel = base + kitDir + fn;
+                std::string path = asset::plugin(pluginInstance, rel);
+                if (!loadWavMonoPcm16(path, pcm[k][inst][layer], sr[k][inst][layer])) {
+                    return false;
+                }
             }
         }
     }
@@ -155,15 +162,14 @@ static bool initBundledKit01() {
     for (int k = 0; k < NUM_KITS; ++k) {
         for (int inst = 0; inst < NUM_INST; ++inst) {
             for (int layer = 0; layer < NUM_LAYERS; ++layer) {
-                g_kits[k][inst][layer].data = pcm[inst][layer].data();
-                g_kits[k][inst][layer].frames = (uint32_t)pcm[inst][layer].size();
-                g_kits[k][inst][layer].sampleRate = sr[inst][layer];
+                g_kits[k][inst][layer].data = pcm[k][inst][layer].data();
+                g_kits[k][inst][layer].frames = (uint32_t)pcm[k][inst][layer].size();
+                g_kits[k][inst][layer].sampleRate = sr[k][inst][layer];
             }
         }
     }
     return true;
 }
-#endif
 
 static void initProceduralKits() {
     const float sr = (float)kPlaceholderSampleRate;
@@ -278,13 +284,9 @@ void initKits() {
     if (g_inited) return;
     g_inited = true;
 
-#ifdef METAMODULE
-    if (!initBundledKit01()) {
+    if (!initBundledKits()) {
         initProceduralKits();
     }
-#else
-    initProceduralKits();
-#endif
 }
 
 const char* instrumentName(int inst) {

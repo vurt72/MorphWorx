@@ -4,7 +4,6 @@
 #include <cmath>
 
 #ifndef METAMODULE
-#include <osdialog.h>
 #include "ui/PngPanelBackground.hpp"
 #endif
 
@@ -13,147 +12,16 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <mutex>
-#include <string>
-#include <vector>
 
 using namespace bdkit;
 
 namespace {
 
-#ifndef METAMODULE
-
-static std::string joinPath(const std::string& dir, const std::string& name) {
-	if (dir.empty()) return name;
-	char last = dir.back();
-	if (last == '/' || last == '\\') return dir + name;
-	return dir + "/" + name;
-}
-
-static bool readAllBytes(const std::string& path, std::vector<uint8_t>& outBytes) {
-	FILE* f = std::fopen(path.c_str(), "rb");
-	if (!f) return false;
-
-	if (std::fseek(f, 0, SEEK_END) != 0) {
-		std::fclose(f);
-		return false;
-	}
-	long size = std::ftell(f);
-	if (size <= 0) {
-		std::fclose(f);
-		return false;
-	}
-	std::rewind(f);
-
-	outBytes.resize((size_t)size);
-	size_t nRead = std::fread(outBytes.data(), 1, outBytes.size(), f);
-	std::fclose(f);
-	return nRead == outBytes.size();
-}
-
-static inline uint16_t rd16(const uint8_t* p) {
-	return (uint16_t)(p[0] | (p[1] << 8));
-}
-
-static inline uint32_t rd32(const uint8_t* p) {
-	return (uint32_t)(p[0] | (p[1] << 8) | (p[2] << 16) | (p[3] << 24));
-}
-
-// Minimal WAV reader for quick kit auditioning.
-// Supports RIFF/WAVE, PCM format 16-bit, mono. Other formats are rejected.
-static bool loadWavMonoPcm16(const std::string& path, std::vector<int16_t>& outPcm, uint32_t& outSampleRate,
-	std::string& outErr) {
-	outErr.clear();
-	std::vector<uint8_t> bytes;
-	if (!readAllBytes(path, bytes)) {
-		outErr = "Failed to read: " + path;
-		return false;
-	}
-	if (bytes.size() < 44) {
-		outErr = "Not a WAV (too small): " + path;
-		return false;
-	}
-	if (std::memcmp(bytes.data(), "RIFF", 4) != 0 || std::memcmp(bytes.data() + 8, "WAVE", 4) != 0) {
-		outErr = "Not a RIFF/WAVE file: " + path;
-		return false;
-	}
-
-	bool fmtFound = false;
-	bool dataFound = false;
-	uint16_t audioFormat = 0;
-	uint16_t numChannels = 0;
-	uint32_t sampleRate = 0;
-	uint16_t bitsPerSample = 0;
-	uint32_t dataPos = 0;
-	uint32_t dataSize = 0;
-
-	uint32_t pos = 12;
-	while (pos + 8 <= bytes.size()) {
-		const uint8_t* c = bytes.data() + pos;
-		uint32_t chunkSize = rd32(c + 4);
-		pos += 8;
-		if (pos + chunkSize > bytes.size()) break;
-
-		if (std::memcmp(c, "fmt ", 4) == 0) {
-			if (chunkSize < 16) {
-				outErr = "Invalid fmt chunk: " + path;
-				return false;
-			}
-			const uint8_t* f = bytes.data() + pos;
-			audioFormat = rd16(f + 0);
-			numChannels = rd16(f + 2);
-			sampleRate = rd32(f + 4);
-			bitsPerSample = rd16(f + 14);
-			fmtFound = true;
-		}
-		else if (std::memcmp(c, "data", 4) == 0) {
-			dataPos = pos;
-			dataSize = chunkSize;
-			dataFound = true;
-		}
-
-		pos += chunkSize;
-		if (pos & 1) pos++; // word-align
-	}
-
-	if (!fmtFound || !dataFound) {
-		outErr = "Missing fmt/data chunk: " + path;
-		return false;
-	}
-	if (audioFormat != 1) {
-		outErr = "WAV must be PCM (format 1): " + path;
-		return false;
-	}
-	if (numChannels != 1) {
-		outErr = "WAV must be mono: " + path;
-		return false;
-	}
-	if (bitsPerSample != 16) {
-		outErr = "WAV must be 16-bit: " + path;
-		return false;
-	}
-	if (sampleRate == 0) {
-		outErr = "Invalid sample rate: " + path;
-		return false;
-	}
-
-	uint32_t nSamp = dataSize / 2;
-	outPcm.resize(nSamp);
-	const uint8_t* d = bytes.data() + dataPos;
-	for (uint32_t i = 0; i < nSamp; ++i) {
-		outPcm[i] = (int16_t)rd16(d + i * 2);
-	}
-	outSampleRate = sampleRate;
-	return true;
-}
-
-#endif // !METAMODULE
-
 struct KitParamQuantity : ParamQuantity {
 	std::string getDisplayValueString() override {
 		int k = (int)std::lround(getValue());
 		if (k < 0) k = 0;
-		if (k > 4) k = 4;
+		if (k >= NUM_KITS) k = NUM_KITS - 1;
 		return std::to_string(k + 1);
 	}
 };
@@ -297,24 +165,22 @@ static inline bool isHatInst(int inst) {
 struct Amenolith : Module {
 	enum ParamIds {
 		KIT_PARAM,
-		DRIVE_PARAM,
-		HUMANIZE_PARAM,
-		LAYER_SELECT_PARAM,
+			SCRAMBLE_PARAM,
 		ACCENT_PARAM,
+			DRIVE_PARAM,
+			HUMANIZE_PARAM,
+			LAYER_SELECT_PARAM,
+			GEN_PITCH_PARAM,
 
-		LEVEL_PARAM_BASE,
-		PAN_PARAM_BASE = LEVEL_PARAM_BASE + NUM_INST,
-		TUNE_PARAM_BASE = PAN_PARAM_BASE + NUM_INST,
-		LENGTH_PARAM_BASE = TUNE_PARAM_BASE + NUM_INST,
+			// Per-voice MM controls in column->row order: RR, PAN, LVL, SEMI, LENGTH.
+			RR_MODE_PARAM_BASE,
+			PAN_PARAM_BASE = RR_MODE_PARAM_BASE + NUM_INST,
+			LEVEL_PARAM_BASE = PAN_PARAM_BASE + NUM_INST,
+			TUNE_PARAM_BASE = LEVEL_PARAM_BASE + NUM_INST,
+			LENGTH_PARAM_BASE = TUNE_PARAM_BASE + NUM_INST,
 
 			// Legacy global RR (kept for backward compatibility, no longer used in UI)
 			RR_MODE_PARAM = LENGTH_PARAM_BASE + NUM_INST,
-
-			// Per-voice RR mode (OFF/EUC/DENS), one switch under each TRIG input
-			RR_MODE_PARAM_BASE,
-
-			// Generative pitch modulation (global on/off). Appended to preserve indices.
-			GEN_PITCH_PARAM = RR_MODE_PARAM_BASE + NUM_INST,
 			PARAMS_LEN
 	};
 	enum InputIds {
@@ -342,7 +208,12 @@ struct Amenolith : Module {
 	};
 
 	dsp::SchmittTrigger trig[NUM_INST];
+	dsp::SchmittTrigger scrambleTrig;
 	Voice v[NUM_INST];
+
+	// Per-instrument kit map for scramble. -1 = use main kit knob.
+	int scrambleKitMap_[NUM_INST] = {-1, -1, -1, -1, -1, -1};
+	bool scrambleActive_ = false;
 
 	int ctrlDiv = 0;
 	uint32_t sampleCounter = 0;
@@ -497,140 +368,32 @@ struct Amenolith : Module {
 	float semitoneRatio[LUT_SIZE] = {};
 	float mixEnv_ = 0.f;
 
-#ifndef METAMODULE
-	struct RuntimeSample {
-		std::vector<int16_t> pcm;
-		uint32_t sampleRate = 48000;
-		bool loaded = false;
-	};
+	// Cached envelope follower coefficients (recomputed on sample rate change, not per sample).
+	float envAttackCoeff_  = 0.f;
+	float envReleaseCoeff_ = 0.f;
 
-	struct RuntimeKit {
-		RuntimeSample s[NUM_INST][NUM_LAYERS];
-		bool loaded = false;
-		std::string dirPath;
-		std::string lastError;
-	};
-
-	RuntimeKit runtimeActive;
-	RuntimeKit runtimePending;
-	bool runtimePendingReady = false;
-	bool runtimeStopVoicesRequested = false;
-	std::mutex runtimeMutex;
-	bool autoLoadKit01Requested = true;
-
-	static const char* filePrefixForInst(int inst) {
-		switch (inst) {
-			case BD: return "BD";
-			case SN: return "SN1";
-			case GSN: return "SN2";
-			case CH: return "CH";
-			case OH: return "OH";
-			case RC: return "ridcra";
-			default: return "??";
-		}
+	void updateEnvCoeffs(float sr) {
+		envAttackCoeff_  = std::exp(-1.f / (0.002f * sr));
+		envReleaseCoeff_ = std::exp(-1.f / (0.08f  * sr));
 	}
 
-	bool loadRuntimeKitFromDir(RuntimeKit& dst, const std::string& dirPath) {
-		dst = RuntimeKit{};
-		dst.dirPath = dirPath;
-		dst.loaded = false;
-		dst.lastError.clear();
-
-		for (int inst = 0; inst < NUM_INST; ++inst) {
-			for (int layer = 0; layer < NUM_LAYERS; ++layer) {
-				std::string err;
-				uint32_t sr = 0;
-				std::string fn = std::string(filePrefixForInst(inst)) + "_" + std::to_string(layer + 1) + ".wav";
-				std::string path = joinPath(dirPath, fn);
-				if (!loadWavMonoPcm16(path, dst.s[inst][layer].pcm, sr, err)) {
-					fn = std::string(filePrefixForInst(inst)) + "_" + std::to_string(layer + 1) + ".WAV";
-					path = joinPath(dirPath, fn);
-					if (!loadWavMonoPcm16(path, dst.s[inst][layer].pcm, sr, err)) {
-						dst.lastError = err;
-						return false;
-					}
-				}
-				dst.s[inst][layer].sampleRate = sr;
-				dst.s[inst][layer].loaded = true;
-			}
-		}
-
-		dst.loaded = true;
-		return true;
+	void onSampleRateChange(const SampleRateChangeEvent& e) override {
+		updateEnvCoeffs(e.sampleRate);
 	}
-
-	bool queueLoadRuntimeKitFromDir(const std::string& dirPath) {
-		std::lock_guard<std::mutex> lock(runtimeMutex);
-		RuntimeKit tmp;
-		if (!loadRuntimeKitFromDir(tmp, dirPath)) {
-			runtimeActive.lastError = tmp.lastError.empty() ? "Failed to load kit" : tmp.lastError;
-			return false;
-		}
-		runtimePending = std::move(tmp);
-		runtimePendingReady = true;
-		runtimeStopVoicesRequested = true;
-		return true;
-	}
-
-	bool queueReplaceOneRuntimeSample(int inst, int layer, const std::string& wavPath) {
-		std::string err;
-		uint32_t sr = 0;
-		std::vector<int16_t> pcm;
-		if (!loadWavMonoPcm16(wavPath, pcm, sr, err)) {
-			std::lock_guard<std::mutex> lock(runtimeMutex);
-			runtimeActive.lastError = err;
-			return false;
-		}
-
-		std::lock_guard<std::mutex> lock(runtimeMutex);
-		runtimePending = runtimeActive;
-		runtimePending.loaded = true;
-		runtimePending.s[inst][layer].pcm = std::move(pcm);
-		runtimePending.s[inst][layer].sampleRate = sr;
-		runtimePending.s[inst][layer].loaded = true;
-		runtimePendingReady = true;
-		runtimeStopVoicesRequested = true;
-		return true;
-	}
-
-	bool queueReloadRuntimeKit() {
-		std::lock_guard<std::mutex> lock(runtimeMutex);
-		if (runtimeActive.dirPath.empty()) {
-			runtimeActive.lastError = "No kit loaded yet";
-			return false;
-		}
-		RuntimeKit tmp;
-		if (!loadRuntimeKitFromDir(tmp, runtimeActive.dirPath)) {
-			runtimeActive.lastError = tmp.lastError.empty() ? "Failed to reload kit" : tmp.lastError;
-			return false;
-		}
-		runtimePending = std::move(tmp);
-		runtimePendingReady = true;
-		runtimeStopVoicesRequested = true;
-		return true;
-	}
-
-	void clearRuntimeKit() {
-		std::lock_guard<std::mutex> lock(runtimeMutex);
-		runtimeActive = RuntimeKit{};
-		runtimePending = RuntimeKit{};
-		runtimePendingReady = false;
-		runtimeStopVoicesRequested = true;
-	}
-#endif
 
 	Amenolith() {
 		config(PARAMS_LEN, INPUTS_LEN, OUTPUTS_LEN, LIGHTS_LEN);
 
-		configParam<KitParamQuantity>(KIT_PARAM, 0.f, 4.f, 0.f, "Kit");
+		configParam<KitParamQuantity>(KIT_PARAM, 0.f, (float)(NUM_KITS - 1), 0.f, "Kit");
 		getParamQuantity(KIT_PARAM)->snapEnabled = true;
 		configParam(DRIVE_PARAM, 0.f, 1.f, 0.f, "Drive");
 		configParam(HUMANIZE_PARAM, 0.f, 1.f, 0.f, "Humanize");
 		configSwitch(LAYER_SELECT_PARAM, 0.f, 2.f, 0.f, "Layer", {"1", "2", "3"});
 		// Legacy global RR (no longer used)
 		configSwitch(RR_MODE_PARAM, 0.f, 2.f, 0.f, "Round robin (legacy)", {"OFF", "EUC", "DENS"});
-		configParam(ACCENT_PARAM, 0.f, 1.f, 1.f, "Accent amount / poly sensitivity");
+		configParam(ACCENT_PARAM, 0.f, 1.f, 0.7f, "Accent amount / poly sensitivity");
 		configSwitch(GEN_PITCH_PARAM, 0.f, 1.f, 0.f, "Generative pitch", {"Off", "On"});
+		configParam(SCRAMBLE_PARAM, 0.f, 1.f, 0.f, "Scramble kits");
 
 		for (int i = 0; i < NUM_INST; ++i) {
 			configSwitch(RR_MODE_PARAM_BASE + i, 0.f, 2.f, 0.f,
@@ -638,7 +401,17 @@ struct Amenolith : Module {
 		}
 
 		for (int i = 0; i < NUM_INST; ++i) {
-			configParam(LEVEL_PARAM_BASE + i, 0.f, 1.f, 0.8f, std::string(instrumentName(i)) + " level");
+			float defaultLevel = 0.8f;
+			switch (i) {
+				case BD:  defaultLevel = 1.0f; break;
+				case SN:  defaultLevel = 1.0f; break;
+				case GSN: defaultLevel = 0.5f; break;
+				case CH:  defaultLevel = 0.5f; break;
+				case OH:  defaultLevel = 0.5f; break;
+				case RC:  defaultLevel = 0.35f; break;
+				default: break;
+			}
+			configParam(LEVEL_PARAM_BASE + i, 0.f, 1.f, defaultLevel, std::string(instrumentName(i)) + " level");
 			float defaultPan = 0.f;
 			switch (i) {
 				case BD: defaultPan = 0.0f; break;
@@ -652,7 +425,14 @@ struct Amenolith : Module {
 			configParam(PAN_PARAM_BASE + i, -1.f, 1.f, defaultPan, std::string(instrumentName(i)) + " pan");
 			configParam<SemitoneParamQuantity>(TUNE_PARAM_BASE + i, -3.f, 3.f, 0.f, std::string(instrumentName(i)) + " tune (semitones)");
 			getParamQuantity(TUNE_PARAM_BASE + i)->snapEnabled = true;
-			configParam(LENGTH_PARAM_BASE + i, 0.f, 1.f, 1.f, std::string(instrumentName(i)) + " length");
+			float defaultLength = 1.f;
+			switch (i) {
+				case CH: defaultLength = 0.4f; break;
+				case OH: defaultLength = 0.4f; break;
+				case RC: defaultLength = 0.4f; break;
+				default: break;
+			}
+			configParam(LENGTH_PARAM_BASE + i, 0.f, 1.f, defaultLength, std::string(instrumentName(i)) + " length");
 		}
 
 		configInput(KIT_CV_INPUT, "Kit CV");
@@ -679,6 +459,9 @@ struct Amenolith : Module {
 			setPan(i, params[PAN_PARAM_BASE + i].getValue());
 		}
 
+		// Cache envelope follower coefficients at default sample rate.
+		updateEnvCoeffs(48000.f);
+
 		initKits();
 	}
 
@@ -701,13 +484,40 @@ struct Amenolith : Module {
 			resetGenPitchPhrase(i);
 		}
 		lastQuantizedKit_ = -1;
+		scrambleActive_ = false;
+		for (int i = 0; i < NUM_INST; ++i) scrambleKitMap_[i] = -1;
+	}
+
+	json_t* dataToJson() override {
+		json_t* root = json_object();
+		json_object_set_new(root, "scrambleActive", json_boolean(scrambleActive_));
+		json_t* arr = json_array();
+		for (int i = 0; i < NUM_INST; ++i)
+			json_array_append_new(arr, json_integer(scrambleKitMap_[i]));
+		json_object_set_new(root, "scrambleKitMap", arr);
+		return root;
+	}
+
+	void dataFromJson(json_t* root) override {
+		json_t* sa = json_object_get(root, "scrambleActive");
+		if (sa) scrambleActive_ = json_is_true(sa);
+		json_t* arr = json_object_get(root, "scrambleKitMap");
+		if (arr && json_is_array(arr)) {
+			for (int i = 0; i < NUM_INST && i < (int)json_array_size(arr); ++i) {
+				json_t* v = json_array_get(arr, i);
+				if (v) scrambleKitMap_[i] = (int)json_integer_value(v);
+			}
+		}
 	}
 
 	void setPan(int inst, float pan) {
-		// pan -1..+1, constant-power
-		float angle = (pan * 0.5f + 0.5f) * (float)M_PI * 0.5f;
-		v[inst].panL = std::cos(angle);
-		v[inst].panR = std::sin(angle);
+		// pan -1..+1, constant-power via sqrt — avoids cos/sin on ARM.
+		// Identical law: panL = cos(angle), panR = sin(angle) with angle = t*pi/2
+		// approximated as panL = sqrt(1-t), panR = sqrt(t), which is exact at
+		// the endpoints and perceptually identical in the useful range.
+		float t = pan * 0.5f + 0.5f;  // remap -1..+1 → 0..1
+		v[inst].panL = std::sqrt(1.f - t);
+		v[inst].panR = std::sqrt(t);
 	}
 
 	inline float rand01() {
@@ -786,6 +596,7 @@ struct Amenolith : Module {
 		// This avoids purely-white-noise jitter and sounds more like a performer.
 		if (wild > 0.f) {
 			humanizeDrift[inst] = humanizeDrift[inst] * 0.97f + randGauss01() * 0.03f;
+			if (std::fabs(humanizeDrift[inst]) < 1e-30f) humanizeDrift[inst] = 0.f;
 			float driftBias = clampf(humanizeDrift[inst] * 0.35f * wild, -0.50f, 0.50f);
 			jitterNorm += driftBias;
 			jitterNorm = clampf(jitterNorm, -1.50f, 1.50f);
@@ -817,12 +628,13 @@ struct Amenolith : Module {
 		pendingGainMult[inst] = std::pow(10.f, db / 20.f);
 	}
 
-	inline int quantizeKit(float knob0to4, float cvVolts0to10) {
-		float cv = clampf(cvVolts0to10 / 10.f, 0.f, 1.f) * 4.f;
-		float x = knob0to4 + cv;
+	inline int quantizeKit(float knob, float cvVolts) {
+		// 1V per kit step — 0V = no offset, 9V = +9 kits.
+		float cv = cvVolts;
+		float x = knob + cv;
 		int k = (int)std::lround(x);
 		if (k < 0) k = 0;
-		if (k > 4) k = 4;
+		if (k >= NUM_KITS) k = NUM_KITS - 1;
 		return k;
 	}
 
@@ -1057,10 +869,9 @@ struct Amenolith : Module {
 	void startVoice(int inst, const ProcessArgs& args, bool /*isRoll*/) {
 		Voice& vc = v[inst];
 
-		// Deferred kit switching per instrument
-		if (!vc.active) {
-			vc.currentKit = vc.pendingKit;
-		}
+		// Always apply the pending kit on a new trigger — the voice is being
+		// re-started so the old sample pointer becomes irrelevant.
+		vc.currentKit = vc.pendingKit;
 
 		// Velocity behavior:
 		// - If VEL is patched, it selects the sample layer (and also applies a small gain factor).
@@ -1121,25 +932,7 @@ struct Amenolith : Module {
 		velFactor *= nextGainMult[inst];
 		nextGainMult[inst] = 1.f;
 		velFactor = clampf(velFactor, 0.65f, 4.50f);
-		const Sample* sp = nullptr;
-		Sample runtimeSample;
-
-#ifndef METAMODULE
-		// Runtime kit auditioning overrides KIT 1 (index 0) only.
-		if (vc.currentKit == 0) {
-			std::lock_guard<std::mutex> lock(runtimeMutex);
-			if (runtimeActive.loaded && runtimeActive.s[inst][layer].loaded && !runtimeActive.s[inst][layer].pcm.empty()) {
-				runtimeSample.data = runtimeActive.s[inst][layer].pcm.data();
-				runtimeSample.frames = (uint32_t)runtimeActive.s[inst][layer].pcm.size();
-				runtimeSample.sampleRate = runtimeActive.s[inst][layer].sampleRate;
-				sp = &runtimeSample;
-			}
-		}
-#endif
-		if (!sp) {
-			sp = &g_kits[vc.currentKit][inst][layer];
-		}
-		const Sample& s = *sp;
+		const Sample& s = g_kits[vc.currentKit][inst][layer];
 
 		vc.data = s.data;
 		vc.frames = s.frames;
@@ -1216,26 +1009,81 @@ struct Amenolith : Module {
 		float b = vc.data[idx + 1] * (1.f / 32768.f);
 		float t = (float)frac * (1.f / 65536.f);
 		float s = a + (b - a) * t;
-		if (isHatInst(inst)) {
-			float toneCoeff = (inst == OH) ? 0.024f : 0.040f;
-			hatToneState_[inst] += toneCoeff * (s - hatToneState_[inst]);
-			float smear = (inst == OH) ? (0.15f + 0.10f * hum) : (0.10f + 0.08f * hum);
-			s = s * (1.f - smear) + hatToneState_[inst] * smear;
-
-			float excite = std::fabs(s) * ((inst == OH) ? 0.040f : 0.028f) * (0.45f + hum);
-			hatAirEnv_[inst] = clampf(hatAirEnv_[inst] + excite, 0.f, 1.f);
-			float noise = rand01() * 2.f - 1.f;
-			hatAirColor_[inst] += (0.08f + 0.03f * hum) * (noise - hatAirColor_[inst]);
-			float air = noise - hatAirColor_[inst];
-			s += air * hatAirEnv_[inst] * ((inst == OH) ? 0.0105f : 0.0075f);
-			hatAirEnv_[inst] *= (inst == OH) ? 0.9968f : 0.9938f;
-		}
 
 		vc.phase += vc.phaseInc;
 
 		float g = vc.gain;
 		// LEN behaves like a cheap per-voice volume fade rather than a hard chop.
 		// The fade window is precomputed at trigger time to keep runtime cost minimal.
+		if (vc.lengthFadeInv > 0.f && idx >= vc.fadeStartFrame) {
+			float k = (float)(vc.endFrame - 1u - idx) * vc.lengthFadeInv;
+			if (k < 0.f) k = 0.f;
+			if (k > 1.f) k = 1.f;
+			g *= k;
+		}
+		if (vc.fadeIn) {
+			float k = (16.f - (float)vc.fadeIn) / 16.f;
+			g *= k;
+			vc.fadeIn--;
+		}
+		if (vc.choking && vc.fadeOut) {
+			float k = (float)vc.fadeOut / 48.f;
+			g *= k;
+			vc.fadeOut--;
+			if (vc.fadeOut == 0) {
+				vc.active = false;
+				vc.choking = false;
+				return 0.f;
+			}
+		}
+
+		return s * g;
+	}
+
+	inline float nextHatSample(Voice& vc, int inst, float hum) {
+		if (!vc.active || !vc.data || vc.frames < 2 || vc.endFrame < 2) {
+			vc.active = false;
+			return 0.f;
+		}
+
+		uint32_t idx = vc.phase >> 16;
+		if (idx >= vc.endFrame - 1) {
+			vc.active = false;
+			vc.choking = false;
+			vc.fadeOut = 0;
+			return 0.f;
+		}
+
+		uint32_t frac = vc.phase & 0xFFFFu;
+		float a = vc.data[idx] * (1.f / 32768.f);
+		float b = vc.data[idx + 1] * (1.f / 32768.f);
+		float t = (float)frac * (1.f / 65536.f);
+		float s = a + (b - a) * t;
+
+		// Hat air synthesis (CH and OH only — no isHatInst() branch needed here)
+		{
+			const float toneCoeff = (inst == OH) ? 0.024f : 0.040f;
+			hatToneState_[inst] += toneCoeff * (s - hatToneState_[inst]);
+			const float smear = (inst == OH) ? (0.15f + 0.10f * hum) : (0.10f + 0.08f * hum);
+			s = s * (1.f - smear) + hatToneState_[inst] * smear;
+
+			const float excite = std::fabs(s) * ((inst == OH) ? 0.040f : 0.028f) * (0.45f + hum);
+			hatAirEnv_[inst] = clampf(hatAirEnv_[inst] + excite, 0.f, 1.f);
+			const float noise = rand01() * 2.f - 1.f;
+			hatAirColor_[inst] += (0.08f + 0.03f * hum) * (noise - hatAirColor_[inst]);
+			const float air = noise - hatAirColor_[inst];
+			s += air * hatAirEnv_[inst] * ((inst == OH) ? 0.0105f : 0.0075f);
+			hatAirEnv_[inst] *= (inst == OH) ? 0.9968f : 0.9938f;
+			// Flush subnormal floats to zero — exponential decay toward zero causes
+			// massive FPU slowdown on ARM (MetaModule) without DAZ/FTZ hardware flag.
+			if (hatAirEnv_[inst]   < 1e-30f) hatAirEnv_[inst]   = 0.f;
+			if (std::fabs(hatAirColor_[inst])  < 1e-30f) hatAirColor_[inst]  = 0.f;
+			if (std::fabs(hatToneState_[inst]) < 1e-30f) hatToneState_[inst] = 0.f;
+		}
+
+		vc.phase += vc.phaseInc;
+
+		float g = vc.gain;
 		if (vc.lengthFadeInv > 0.f && idx >= vc.fadeStartFrame) {
 			float k = (float)(vc.endFrame - 1u - idx) * vc.lengthFadeInv;
 			if (k < 0.f) k = 0.f;
@@ -1276,43 +1124,38 @@ struct Amenolith : Module {
 				for (int i = 0; i < NUM_INST; ++i) {
 					resetGenPitchPhrase(i);
 				}
+				// Kit knob changed — clear scramble state.
+				scrambleActive_ = false;
 			}
 			lastQuantizedKit_ = targetKit;
 
+			// Scramble button: randomize per-instrument kit for BD, CH, OH, RC.
+			// SN and GSN (SN2) always stay on the current kit.
+			if (scrambleTrig.process(params[SCRAMBLE_PARAM].getValue())) {
+				scrambleActive_ = true;
+				for (int i = 0; i < NUM_INST; ++i) {
+					if (i == SN || i == GSN) {
+						scrambleKitMap_[i] = targetKit;
+					} else {
+						scrambleKitMap_[i] = (int)(rand01() * NUM_KITS);
+						if (scrambleKitMap_[i] >= NUM_KITS) scrambleKitMap_[i] = NUM_KITS - 1;
+					}
+				}
+			}
+
 			for (int i = 0; i < NUM_INST; ++i) {
-				v[i].pendingKit = (uint8_t)targetKit;
+				int kitForInst = scrambleActive_ ? scrambleKitMap_[i] : targetKit;
+				// Keep snares on current kit even if scramble was set before kit change.
+				if (scrambleActive_ && (i == SN || i == GSN)) {
+					kitForInst = targetKit;
+					scrambleKitMap_[i] = targetKit;
+				}
+				v[i].pendingKit = (uint8_t)kitForInst;
 				if (!v[i].active) {
 					v[i].currentKit = v[i].pendingKit;
 				}
 				setPan(i, params[PAN_PARAM_BASE + i].getValue());
 			}
-
-			// (roll removed)
-
-#ifndef METAMODULE
-			// Apply pending runtime kit only when voices are stopped.
-			// This avoids invalidating sample pointers while they're playing.
-			if (runtimeStopVoicesRequested) {
-				for (int i = 0; i < NUM_INST; ++i) {
-					v[i].active = false;
-					v[i].choking = false;
-					v[i].fadeOut = 0;
-				}
-				runtimeStopVoicesRequested = false;
-			}
-			bool allIdle = true;
-			for (int i = 0; i < NUM_INST; ++i) {
-				if (v[i].active) { allIdle = false; break; }
-			}
-			if (allIdle && runtimePendingReady) {
-				if (runtimeMutex.try_lock()) {
-					runtimeActive = std::move(runtimePending);
-					runtimePending = RuntimeKit{};
-					runtimePendingReady = false;
-					runtimeMutex.unlock();
-				}
-			}
-#endif
 		}
 
 		// Triggers (humanized scheduling)
@@ -1374,7 +1217,7 @@ struct Amenolith : Module {
 
 		for (int i = 0; i < NUM_INST; ++i) {
 			Voice& vc = v[i];
-			float s = nextSample(vc, i, hum);
+			float s = isHatInst(i) ? nextHatSample(vc, i, hum) : nextSample(vc, i, hum);
 
 			outputs[INST_OUT_BASE + i].setVoltage(5.f * s);
 
@@ -1398,15 +1241,14 @@ struct Amenolith : Module {
 		mixR = softClip(mixR, drive);
 
 		const float envIn = std::max(std::fabs(mixL), std::fabs(mixR));
-		const float attackCoeff = std::exp(-1.f / (0.002f * args.sampleRate));
-		const float releaseCoeff = std::exp(-1.f / (0.08f * args.sampleRate));
-		const float envCoeff = (envIn > mixEnv_) ? attackCoeff : releaseCoeff;
+		const float envCoeff = (envIn > mixEnv_) ? envAttackCoeff_ : envReleaseCoeff_;
 		mixEnv_ = envIn + envCoeff * (mixEnv_ - envIn);
+		if (mixEnv_ < 1e-30f) mixEnv_ = 0.f;
 		constexpr float MIX_OUTPUT_GAIN = 2.f; // +6 dB on stereo mix outs only
 
 		outputs[MIX_L_OUTPUT].setVoltage(5.f * MIX_OUTPUT_GAIN * mixL);
 		outputs[MIX_R_OUTPUT].setVoltage(5.f * MIX_OUTPUT_GAIN * mixR);
-		outputs[ENV_OUTPUT].setVoltage(10.f * clampf(mixEnv_, 0.f, 1.f));
+		outputs[ENV_OUTPUT].setVoltage(clampf(20.f * mixEnv_, 0.f, 10.f));
 	}
 };
 
@@ -1446,15 +1288,18 @@ using AmenolithRRModeSwitch = CKSSThree;
 struct AmenolithWidget : ModuleWidget {
 	AmenolithWidget(Amenolith* module) {
 		setModule(module);
-		setPanel(createPanel(asset::plugin(pluginInstance, "res/Amenolith.svg")));
-
-		#ifndef METAMODULE
-		// Optional PNG faceplate (when provided). Keep SVG for correct sizing.
-		auto* panelBg = new bem::PngPanelBackground(asset::plugin(pluginInstance, "res/Amenolith.png"));
-		panelBg->box.pos = Vec(0, 0);
-		panelBg->box.size = box.size;
-		addChild(panelBg);
-		#endif
+	#ifdef METAMODULE
+		setPanel(createPanel(asset::plugin(pluginInstance, "res/Amenolith.png")));
+	#else
+		// VCV Rack: no SVG; hardcode 24HP and use PNG directly.
+		box.size = Vec(RACK_GRID_WIDTH * 24, RACK_GRID_HEIGHT);
+		{
+			auto* panelBg = new bem::PngPanelBackground(asset::plugin(pluginInstance, "res/Amenolith.png"));
+			panelBg->box.pos = Vec(0, 0);
+			panelBg->box.size = box.size;
+			addChild(panelBg);
+		}
+	#endif
 
 		#ifndef METAMODULE
 		NVGcolor neonGreen = nvgRGB(0xcd, 0xbc, 0x2d);
@@ -1465,9 +1310,16 @@ struct AmenolithWidget : ModuleWidget {
 				imageHandle = -1;
 			}
 		};
+		struct AmenolithOutputPort : MVXPort {
+			AmenolithOutputPort() {
+				imagePath = asset::plugin(pluginInstance, "res/ports/MVXport_s_yellow.png");
+				imageHandle = -1;
+			}
+		};
 		#endif
 		#ifdef METAMODULE
 		using AmenolithPort = MVXPort;
+		using AmenolithOutputPort = MVXPort;
 		#endif
 
 		// Shift everything down by 10px (~2.65mm) to make room for the headline.
@@ -1494,6 +1346,7 @@ struct AmenolithWidget : ModuleWidget {
 		// --- Global row ---
 		addParam(createParamCentered<RoundLargeBlackKnob>(mm(Vec(14.f, 20.f + yOff)), module, Amenolith::KIT_PARAM));
 		addInput(createInputCentered<AmenolithPort>(mm(Vec(28.f, 20.f + yOff)), module, Amenolith::KIT_CV_INPUT));
+		addParam(createParamCentered<TL1105>(mm(Vec(35.f, 20.f + yOff)), module, Amenolith::SCRAMBLE_PARAM));
 		addInput(createInputCentered<AmenolithPort>(mm(Vec(42.f, 20.f + yOff)), module, Amenolith::ACCENT_CV_INPUT));
 		addParam(createParamCentered<Trimpot>(mm(Vec(49.f, 20.f + yOff)), module, Amenolith::ACCENT_PARAM));
 		addInput(createInputCentered<AmenolithPort>(mm(Vec(56.f, 20.f + yOff)), module, Amenolith::DRIVE_CV_INPUT));
@@ -1501,14 +1354,15 @@ struct AmenolithWidget : ModuleWidget {
 		addParam(createParamCentered<Trimpot>(mm(Vec(76.f, 20.f + yOff)), module, Amenolith::HUMANIZE_PARAM));
 		addParam(createParamCentered<AmenolithCKSSThree>(mm(Vec(86.f, 20.f + yOff)).plus(switchShiftPx), module, Amenolith::LAYER_SELECT_PARAM));
 		addParam(createParamCentered<AmenolithCKSS>(mm(Vec(94.f, 20.f + yOff)).plus(switchShiftPx), module, Amenolith::GEN_PITCH_PARAM));
-		addOutput(createOutputCentered<AmenolithPort>(envOutPos, module, Amenolith::ENV_OUTPUT));
-		addOutput(createOutputCentered<AmenolithPort>(mixLOutPos, module, Amenolith::MIX_L_OUTPUT));
-		addOutput(createOutputCentered<AmenolithPort>(mixROutPos, module, Amenolith::MIX_R_OUTPUT));
+		addOutput(createOutputCentered<AmenolithOutputPort>(envOutPos, module, Amenolith::ENV_OUTPUT));
+		addOutput(createOutputCentered<AmenolithOutputPort>(mixLOutPos, module, Amenolith::MIX_L_OUTPUT));
+		addOutput(createOutputCentered<AmenolithOutputPort>(mixROutPos, module, Amenolith::MIX_R_OUTPUT));
 
 		#ifndef METAMODULE
 		// KIT label 3px higher (~0.79mm)
 		addLabel(bcCreateLabel(Vec(14.f, 13.f + yOff - 0.79f), "KIT", 8.f, neonGreen));
 		addLabel(bcCreateLabel(Vec(28.f, 13.f + yOff), "KIT CV", 8.f, dimGreen));
+		addLabel(bcCreateLabel(Vec(35.f, 13.f + yOff), "SCR", 6.5f, dimGreen));
 		addLabel(bcCreateLabel(Vec(42.f, 13.f + yOff), "ACC", 8.f, dimGreen));
 		addLabel(bcCreateLabel(Vec(49.f, 13.f + yOff), "SENS", 6.5f, dimGreen));
 		addLabel(bcCreateLabel(Vec(56.f, 13.f + yOff), "DRV CV", 8.f, dimGreen));
@@ -1617,90 +1471,16 @@ struct AmenolithWidget : ModuleWidget {
 			addParam(createParamCentered<RoundSmallBlackKnob>(mm(Vec(xSemi, yy)).plus(rowShiftPx), module, Amenolith::TUNE_PARAM_BASE + i));
 			addParam(createParamCentered<Trimpot>(mm(Vec(xLen, yy)).plus(rowShiftPx), module, Amenolith::LENGTH_PARAM_BASE + i));
 
-			addOutput(createOutputCentered<AmenolithPort>(mm(Vec(xOut, yy)).plus(rowShiftPx), module, Amenolith::INST_OUT_BASE + i));
+			addOutput(createOutputCentered<AmenolithOutputPort>(mm(Vec(xOut, yy)).plus(rowShiftPx), module, Amenolith::INST_OUT_BASE + i));
 		}
 	}
-
-#ifndef METAMODULE
-	void step() override {
-		ModuleWidget::step();
-		Amenolith* mod = dynamic_cast<Amenolith*>(this->module);
-		if (mod && mod->autoLoadKit01Requested) {
-			mod->autoLoadKit01Requested = false;
-			mod->queueLoadRuntimeKitFromDir("C:\\kits\\Kit29");
-		}
-	}
-#endif
 
 	void appendContextMenu(Menu* menu) override {
 		Amenolith* module = dynamic_cast<Amenolith*>(this->module);
 		if (!module) return;
 
 		menu->addChild(new MenuSeparator);
-		menu->addChild(createMenuLabel("Amenolith (VCV)"));
-
-#ifndef METAMODULE
-		menu->addChild(createMenuItem("Load Kit01 folder (audition → KIT 1)", "",
-			[=]() {
-				// Select the Kit01 directory itself (loads all samples from that folder).
-				char* dirPath = osdialog_file(OSDIALOG_OPEN_DIR, "C:\\kits", NULL, NULL);
-				if (!dirPath) return;
-				module->queueLoadRuntimeKitFromDir(std::string(dirPath));
-				free(dirPath);
-			}));
-
-		menu->addChild(createMenuItem("Reload last audition kit", "",
-			[=]() {
-				module->queueReloadRuntimeKit();
-			}));
-
-		menu->addChild(createMenuItem("Clear audition kit (use built-in)", "",
-			[=]() {
-				module->clearRuntimeKit();
-			}));
-
-		menu->addChild(new MenuSeparator);
-		menu->addChild(createMenuLabel("Replace one sample (audition kit)"));
-
-		auto replaceOne = [=](int inst, int layer, const std::string& label) {
-			menu->addChild(createMenuItem(label, "",
-				[=]() {
-					char* path = osdialog_file(OSDIALOG_OPEN, NULL, NULL, osdialog_filters_parse("WAV:wav,WAV"));
-					if (!path) return;
-					module->queueReplaceOneRuntimeSample(inst, layer, std::string(path));
-					free(path);
-				}));
-		};
-
-		replaceOne(BD, 0, "BD layer 1 (soft)...");
-		replaceOne(BD, 1, "BD layer 2 (med)...");
-		replaceOne(BD, 2, "BD layer 3 (hard)...");
-		replaceOne(SN, 0, "SN layer 1 (soft)...");
-		replaceOne(SN, 1, "SN layer 2 (med)...");
-		replaceOne(SN, 2, "SN layer 3 (hard)...");
-		replaceOne(GSN, 0, "SN2 layer 1 (soft)...");
-		replaceOne(GSN, 1, "SN2 layer 2 (med)...");
-		replaceOne(GSN, 2, "SN2 layer 3 (hard)...");
-		replaceOne(CH, 0, "CH layer 1 (soft)...");
-		replaceOne(CH, 1, "CH layer 2 (med)...");
-		replaceOne(CH, 2, "CH layer 3 (hard)...");
-		replaceOne(OH, 0, "OH layer 1 (soft)...");
-		replaceOne(OH, 1, "OH layer 2 (med)...");
-		replaceOne(OH, 2, "OH layer 3 (hard)...");
-		replaceOne(RC, 0, "RC layer 1 (soft)...");
-		replaceOne(RC, 1, "RC layer 2 (med)...");
-		replaceOne(RC, 2, "RC layer 3 (hard)...");
-
-		if (!module->runtimeActive.dirPath.empty()) {
-			menu->addChild(new MenuSeparator);
-			menu->addChild(createMenuLabel("Audition dir: " + module->runtimeActive.dirPath));
-		}
-		if (!module->runtimeActive.lastError.empty()) {
-			menu->addChild(createMenuLabel("Last error: " + module->runtimeActive.lastError));
-		}
-#else
-		menu->addChild(createMenuLabel("Audition loader disabled on MetaModule"));
-#endif
+		menu->addChild(createMenuLabel("Amenolith"));
 	}
 };
 Model* modelAmenolith = createModel<Amenolith, AmenolithWidget>("Amenolith");

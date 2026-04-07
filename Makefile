@@ -18,6 +18,7 @@ SOURCES += src/dsp/LookupTables.cpp
 # Amenolith multisample kit player
 SOURCES += src/Amenolith.cpp
 SOURCES += src/sampler/DrumKits.cpp
+SOURCES += src/Ferroklast.cpp
 
 # Phaseon1 (performance-first PM+wavetable voice)
 SOURCES += src/Phaseon1.cpp
@@ -61,6 +62,8 @@ DISTRIBUTABLES += $(wildcard userwaveforms/usr*.txt)
 DISTRIBUTABLES += $(wildcard userwaveforms/USR*.BIN)
 # Phaseon1 factory preset bank — bundled so it auto-loads on first use
 DISTRIBUTABLES += userwaveforms/Phbank.bnk
+# Minimalith factory bank — bundled so new instances auto-load without manual bank selection
+DISTRIBUTABLES += def/Default.bnk
 DISTRIBUTABLES += $(wildcard LICENSE*)
 
 # Include the Rack plugin makefile framework

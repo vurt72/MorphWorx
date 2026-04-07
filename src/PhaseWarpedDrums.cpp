@@ -42,6 +42,7 @@ PhaseWarpedDrums::PhaseWarpedDrums() {
     configOutput(GROUP_GATE_1, "Group Gate 1");
     configOutput(GROUP_GATE_2, "Group Gate 2");
     configOutput(GROUP_GATE_3, "Group Gate 3");
+    configOutput(FILL_GATE, "Fill Active Gate");
 
     float lambda = 10.0f;
     chaosFilter_.setLambda(lambda);
@@ -63,13 +64,14 @@ void PhaseWarpedDrums::onReset() {
     ghostState_ = {};
     chatState_ = {};
     ohatState_ = {};
+    fillState_ = {};
+    fillGateV_ = 0.0f;
     memory_.reset();
     generateNewPattern();
 }
 
 json_t* PhaseWarpedDrums::dataToJson() {
     json_t* rootJ = json_object();
-    json_object_set_new(rootJ, "tempo", json_real(tempo_));
 #ifdef METAMODULE
     json_object_set_new(rootJ, "morphworx_version", json_string(MORPHWORX_VERSION_STRING));
 #endif
@@ -86,14 +88,13 @@ void PhaseWarpedDrums::dataFromJson(json_t* rootJ) {
         }
     }
 #endif
-    json_t* tempoJ = json_object_get(rootJ, "tempo");
-    if (tempoJ) tempo_ = json_number_value(tempoJ);
 }
 
 float PhaseWarpedDrums::getEffectiveParam(int paramId, int cvId, float scale) {
     float knobValue = params[paramId].getValue();
     float cvValue = inputs[cvId].isConnected() ? inputs[cvId].getVoltage() / 10.0f * scale : 0.0f;
-    return math::clamp(knobValue + cvValue, -1.0f, 1.0f);
+    float lo = (paramId == SWING_PARAM) ? -1.0f : 0.0f;
+    return math::clamp(knobValue + cvValue, lo, 1.0f);
 }
 
 // Synchronous generation — only used for initial pattern and reset
@@ -188,6 +189,7 @@ void PhaseWarpedDrums::stepGeneration() {
         ghostTriggers_.clear();
         chatTriggers_.clear();
         ohatTriggers_.clear();
+        fillTriggers_.clear();
 
         genCtx_.enableSnares = (genCtx_.density > 0.05f) && (genCtx_.density + genCtx_.chaos > 0.15f);
         genCtx_.enableGhosts = genCtx_.enableSnares && (genCtx_.chaos > 0.1f) && (genCtx_.density > 0.2f);
@@ -283,19 +285,49 @@ void PhaseWarpedDrums::stepGeneration() {
         ghostTriggers_.sortByPhase();
         chatTriggers_.sortByPhase();
         ohatTriggers_.sortByPhase();
+        fillTriggers_.clear();
 
-        if (genCtx_.chaos > 0.6f) {
-            extractor_.addRatchets(snareTriggers_, genCtx_.chaos, genCtx_.density, genCtx_.metric, genCtx_.pattern.seed + 200);
-            extractor_.addRatchets(ghostTriggers_, genCtx_.chaos, genCtx_.density, genCtx_.metric, genCtx_.pattern.seed + 201);
-            extractor_.addRatchets(chatTriggers_, genCtx_.chaos, genCtx_.density, genCtx_.metric, genCtx_.pattern.seed + 202);
-        }
+        constexpr float KICK_CHAOS_SCALE = 0.80f;
+        constexpr float SNARE_CHAOS_SCALE = 1.00f;
+        constexpr float HAT_CHAOS_SCALE = 1.15f;
 
-        // Hat choke: remove open hats that coincide with closed hats
-        {
-            int steps = std::max(1, genCtx_.metric.gridStepsPerBar());
-            float halfCycleGridStep = 0.5f / (static_cast<float>(std::max(1, genTotalBars_)) * static_cast<float>(steps));
-            pwmt::TriggerExtractor::applyHatChoke(chatTriggers_, ohatTriggers_, halfCycleGridStep);
-        }
+        pwmt::RatchetConfig hatRatchets;
+        hatRatchets.chaosThreshold = 0.60f;
+        hatRatchets.allowTriplet = true;
+        hatRatchets.allowReverse = true;
+
+        pwmt::RatchetConfig snareRatchets;
+        snareRatchets.chaosThreshold = 0.60f;
+        snareRatchets.allowTriplet = true;
+        snareRatchets.allowReverse = true;
+
+        pwmt::RatchetConfig kickRatchets;
+        kickRatchets.chaosThreshold = 0.72f;
+        kickRatchets.probabilityScale = 0.9f;
+        kickRatchets.densityScale = 0.7f;
+        kickRatchets.allowTriplet = true;
+        kickRatchets.allowReverse = true;
+
+        pwmt::FlamConfig snareFlams;
+        snareFlams.minChaos = 0.30f;
+        snareFlams.maxProbability = 0.40f;
+        snareFlams.phaseOffset = 1.0f / (128.0f * static_cast<float>(std::max(1, genTotalBars_)));
+        snareFlams.velocityScale = 0.65f;
+
+        float chaos = genCtx_.chaos;
+
+        // Generate ratchets and flams in grid space before swing so the fill moves
+        // as a coherent unit after swing instead of being re-spaced by it.
+        extractor_.addRatchets(chatTriggers_, chaos * HAT_CHAOS_SCALE, genCtx_.density,
+                               genCtx_.metric, genCtx_.pattern.seed + 202, hatRatchets, &fillTriggers_);
+        extractor_.addRatchets(snareTriggers_, chaos * SNARE_CHAOS_SCALE, genCtx_.density,
+                               genCtx_.metric, genCtx_.pattern.seed + 200, snareRatchets, &fillTriggers_);
+        extractor_.addRatchets(ghostTriggers_, chaos * SNARE_CHAOS_SCALE, genCtx_.density,
+                               genCtx_.metric, genCtx_.pattern.seed + 201, snareRatchets, &fillTriggers_);
+        extractor_.addRatchets(kickTriggers_, chaos * KICK_CHAOS_SCALE, genCtx_.density,
+                               genCtx_.metric, genCtx_.pattern.seed + 203, kickRatchets, &fillTriggers_);
+
+        extractor_.applyFlams(snareTriggers_, chaos, snareFlams, genCtx_.pattern.seed + 300, &fillTriggers_);
 
         if (std::abs(genCtx_.swing) > 0.01f) {
             extractor_.applySwing(kickTriggers_, genCtx_.swing, genCtx_.metric);
@@ -303,13 +335,29 @@ void PhaseWarpedDrums::stepGeneration() {
             extractor_.applySwing(ghostTriggers_, genCtx_.swing, genCtx_.metric);
             extractor_.applySwing(chatTriggers_, genCtx_.swing, genCtx_.metric);
             extractor_.applySwing(ohatTriggers_, genCtx_.swing, genCtx_.metric);
+            extractor_.applySwing(fillTriggers_, genCtx_.swing, genCtx_.metric);
         }
+
+        // Hat choke runs after swing so it reflects the final played timing.
+        {
+            int steps = std::max(1, genCtx_.metric.gridStepsPerBar());
+            float cycleSteps = static_cast<float>(std::max(1, genTotalBars_)) * static_cast<float>(steps);
+            float maxSwingDisplace = std::abs(genCtx_.swing) * 0.5f / cycleSteps;
+            float chokeWindow = 0.5f / cycleSteps + maxSwingDisplace;
+            pwmt::TriggerExtractor::applyHatChoke(chatTriggers_, ohatTriggers_, chokeWindow);
+        }
+
+        fillTriggers_.sortByPhase();
 
         kickState_ = {};
         snareState_ = {};
         ghostState_ = {};
         chatState_ = {};
         ohatState_ = {};
+        fillState_ = {};
+        fillGateV_ = 0.0f;
+        fillState_ = {};
+        fillGateV_ = 0.0f;
 
         genActive_ = false;
     }
@@ -317,8 +365,12 @@ void PhaseWarpedDrums::stepGeneration() {
 
 std::pair<float, float> PhaseWarpedDrums::processTriggerState(TriggerState& state,
                                                               const pwmt::TriggerBuffer& triggers,
+                                                              float prevPhase,
                                                               float currentPhase,
-                                                              float sampleTime) {
+                                                              float phaseAdvance,
+                                                              bool wrapped,
+                                                              float sampleTime,
+                                                              float gateDuration) {
     float gate = 0.0f;
     float vel = state.lastVelocityV;
 
@@ -329,13 +381,41 @@ std::pair<float, float> PhaseWarpedDrums::processTriggerState(TriggerState& stat
         }
     }
 
-    if (state.nextTriggerIdx < triggers.count) {
-        const auto& t = triggers[state.nextTriggerIdx];
-        if (currentPhase >= t.phase) {
-            state.gateTimer = TriggerState::GATE_DURATION;
-            gate = 10.0f;
-            state.lastVelocityV = t.velocity * 10.0f;
-            vel = state.lastVelocityV;
+    auto fireTrigger = [&](const pwmt::Trigger& trigger) {
+        state.gateTimer = gateDuration;
+        gate = 10.0f;
+        state.lastVelocityV = trigger.velocity * 10.0f;
+        vel = state.lastVelocityV;
+    };
+
+    if (!wrapped) {
+        while (state.nextTriggerIdx < triggers.count) {
+            const auto& t = triggers[state.nextTriggerIdx];
+            if (currentPhase < t.phase) {
+                break;
+            }
+            fireTrigger(t);
+            state.nextTriggerIdx++;
+        }
+    }
+    else {
+        while (state.nextTriggerIdx < triggers.count) {
+            const auto& t = triggers[state.nextTriggerIdx];
+            if (t.phase < prevPhase) {
+                break;
+            }
+            fireTrigger(t);
+            state.nextTriggerIdx++;
+        }
+
+        state.nextTriggerIdx = 0;
+        float fireWindowEnd = std::max(currentPhase, phaseAdvance);
+        while (state.nextTriggerIdx < triggers.count) {
+            const auto& t = triggers[state.nextTriggerIdx];
+            if (t.phase > fireWindowEnd) {
+                break;
+            }
+            fireTrigger(t);
             state.nextTriggerIdx++;
         }
     }
@@ -343,20 +423,22 @@ std::pair<float, float> PhaseWarpedDrums::processTriggerState(TriggerState& stat
     return {gate, vel};
 }
 
-void PhaseWarpedDrums::processTriggers(float sampleTime) {
-    auto kv = processTriggerState(kickState_, kickTriggers_, barPhase_, sampleTime);
+void PhaseWarpedDrums::processTriggers(float sampleTime, float prevPhase, float phaseAdvance, bool wrapped) {
+    auto kv = processTriggerState(kickState_, kickTriggers_, prevPhase, barPhase_, phaseAdvance, wrapped, sampleTime);
     kickGateV_ = kv.first; kickVelV_ = kv.second;
-    auto sv = processTriggerState(snareState_, snareTriggers_, barPhase_, sampleTime);
+    auto sv = processTriggerState(snareState_, snareTriggers_, prevPhase, barPhase_, phaseAdvance, wrapped, sampleTime);
     snareGateV_ = sv.first; snareVelV_ = sv.second;
-    auto gv = processTriggerState(ghostState_, ghostTriggers_, barPhase_, sampleTime);
+    auto gv = processTriggerState(ghostState_, ghostTriggers_, prevPhase, barPhase_, phaseAdvance, wrapped, sampleTime);
     ghostGateV_ = gv.first; ghostVelV_ = gv.second;
-    auto cv = processTriggerState(chatState_, chatTriggers_, barPhase_, sampleTime);
+    auto cv = processTriggerState(chatState_, chatTriggers_, prevPhase, barPhase_, phaseAdvance, wrapped, sampleTime);
     chatGateV_ = cv.first; chatVelV_ = cv.second;
-    auto ov = processTriggerState(ohatState_, ohatTriggers_, barPhase_, sampleTime);
+    auto ov = processTriggerState(ohatState_, ohatTriggers_, prevPhase, barPhase_, phaseAdvance, wrapped, sampleTime);
     ohatGateV_ = ov.first; ohatVelV_ = ov.second;
+    auto fv = processTriggerState(fillState_, fillTriggers_, prevPhase, barPhase_, phaseAdvance, wrapped, sampleTime, FILL_GATE_DURATION);
+    fillGateV_ = fv.first;
 }
 
-void PhaseWarpedDrums::updateGroupGates() {
+void PhaseWarpedDrums::updateGroupGates(float phaseAdvance) {
     groupGateV_[0] = groupGateV_[1] = groupGateV_[2] = 0.0f;
 
     // Determine how many bars per cycle
@@ -373,10 +455,14 @@ void PhaseWarpedDrums::updateGroupGates() {
     localPhase -= static_cast<float>(static_cast<int>(localPhase));
     if (localPhase < 0.0f) localPhase += 1.0f;
 
+    float groupWindow = 0.5f / (static_cast<float>(std::max(1, numBars)) * static_cast<float>(std::max(1, overlayMetric_.gridStepsPerBar())));
+    groupWindow = std::max(groupWindow, phaseAdvance * 1.1f);
+    groupWindow = math::clamp(groupWindow, 0.004f, 0.03f);
+
     float cursor = 0.0f;
     for (int g = 0; g < std::min(3, overlayGrouping_.getNumGroups()); g++) {
         float start = cursor;
-        float end = pwmt::wrapPhase(start + 0.02f);
+        float end = pwmt::wrapPhase(start + groupWindow);
         bool active = false;
         if (end > start) {
             active = (localPhase >= start && localPhase < end);
@@ -405,6 +491,7 @@ void PhaseWarpedDrums::updateOutputs() {
     outputs[GROUP_GATE_1].setVoltage(groupGateV_[0]);
     outputs[GROUP_GATE_2].setVoltage(groupGateV_[1]);
     outputs[GROUP_GATE_3].setVoltage(groupGateV_[2]);
+    outputs[FILL_GATE].setVoltage(fillGateV_);
 }
 
 void PhaseWarpedDrums::updateLights(float sampleTime) {
@@ -457,11 +544,12 @@ void PhaseWarpedDrums::process(const ProcessArgs& args) {
         }
     };
 
-    // Generate initial pattern on first process() call (synchronous, OK once)
+    // Start initial generation on first process() call, but keep it amortized
+    // so startup does not spend one full audio callback generating the pattern.
     if (!hasGeneratedInitialPattern_) {
         applyTimeMode(timeMode);
         lastTimeMode_ = timeMode;
-        generateNewPattern();
+        startGeneration();
         hasGeneratedInitialPattern_ = true;
     }
 
@@ -514,24 +602,20 @@ void PhaseWarpedDrums::process(const ProcessArgs& args) {
         ghostState_ = {};
         chatState_ = {};
         ohatState_ = {};
+        fillState_ = {};
+        fillGateV_ = 0.0f;
     }
 
     updatePhase(args.sampleTime);
 
-    // Detect bar wrap
-    if (barPhase_ < prevPhase) {
-        // Reset trigger indices on bar wrap but PRESERVE velocity S&H
-        kickState_.nextTriggerIdx = 0;
-        kickState_.gateTimer = 0.0f;
-        snareState_.nextTriggerIdx = 0;
-        snareState_.gateTimer = 0.0f;
-        ghostState_.nextTriggerIdx = 0;
-        ghostState_.gateTimer = 0.0f;
-        chatState_.nextTriggerIdx = 0;
-        chatState_.gateTimer = 0.0f;
-        ohatState_.nextTriggerIdx = 0;
-        ohatState_.gateTimer = 0.0f;
+    float phaseAdvance = barPhase_ - prevPhase;
+    bool wrapped = false;
+    if (phaseAdvance < 0.0f) {
+        phaseAdvance += 1.0f;
+        wrapped = true;
+    }
 
+    if (wrapped) {
         barCounter_++;
         int regenMode = static_cast<int>(params[AUTO_REGEN_PARAM].getValue());
         if (genCooldownTimer_ <= 0.0f) {
@@ -550,8 +634,8 @@ void PhaseWarpedDrums::process(const ProcessArgs& args) {
         stepGeneration();
     }
 
-    processTriggers(args.sampleTime);
-    updateGroupGates();
+    processTriggers(args.sampleTime, prevPhase, phaseAdvance, wrapped);
+    updateGroupGates(phaseAdvance);
     updateOutputs();
     updateLights(args.sampleTime);
 }
@@ -598,30 +682,21 @@ static PWLabel* pwCreateLabel(Vec mmPos, const char* text, float fontSize, NVGco
 struct PhaseWarpedDrumsWidget : ModuleWidget {
     PhaseWarpedDrumsWidget(PhaseWarpedDrums* module) {
         setModule(module);
-        auto* panel = createPanel(asset::plugin(pluginInstance,
 #ifdef METAMODULE
-            // MetaModule: use a Septagon-named panel so faceplate lookup can resolve Septagon.png.
-            "res/Septagon.svg"
-#else
-            "res/PhaseWarpedDrums.svg"
-#endif
-        ));
-        setPanel(panel);
-        // Ensure panel width is actually 24HP (Rack can cache SVG sizes).
+        setPanel(createPanel(asset::plugin(pluginInstance, "res/Septagon.png")));
         box.size = Vec(RACK_GRID_WIDTH * 24, RACK_GRID_HEIGHT);
-        if (panel) {
-            panel->box.size = box.size;
-            // Faceplate art is now PNG; keep SVG only for sizing.
-            panel->visible = false;
+#else
+        // VCV Rack: no SVG; hardcode 24HP and use PNG directly.
+        box.size = Vec(RACK_GRID_WIDTH * 24, RACK_GRID_HEIGHT);
+        {
+            auto* panelBg = new bem::PngPanelBackground(asset::plugin(pluginInstance, "res/Septagon.png"));
+            panelBg->box.pos = Vec(0, 0);
+            panelBg->box.size = box.size;
+            addChild(panelBg);
         }
+#endif
 
 #ifndef METAMODULE
-        // PNG faceplate background (drawn on top of the hidden SVG panel).
-        auto* panelBg = new bem::PngPanelBackground(asset::plugin(pluginInstance, "res/Septagon.png"));
-        panelBg->box.pos = Vec(0, 0);
-        panelBg->box.size = box.size;
-        addChild(panelBg);
-
         struct SeptagonPort : MVXPort {
             SeptagonPort() {
                 imagePath = asset::plugin(pluginInstance, "res/ports/MVXport_silver.png");
@@ -708,6 +783,7 @@ struct PhaseWarpedDrumsWidget : ModuleWidget {
         addChild(pwCreateLabel(Vec(15.f, 147.f), "GRP1", 6.f, dim));
         addChild(pwCreateLabel(Vec(30.5f, 147.f), "GRP2", 6.f, dim));
         addChild(pwCreateLabel(Vec(46.f, 147.f), "GRP3", 6.f, dim));
+        addChild(pwCreateLabel(Vec(61.5f, 147.f), "FILL", 6.f, dim));
         addChild(pwCreateLabel(Vec(76.f, 147.f), "PHASE", 6.f, dim));
         addChild(pwCreateLabel(Vec(107.f, 147.f), "ACCENT", 6.f, dim));
 #endif
@@ -771,6 +847,7 @@ struct PhaseWarpedDrumsWidget : ModuleWidget {
         addOutput(createOutputCentered<SeptagonPort>(mm2px(Vec(15, outY2)), module, PhaseWarpedDrums::GROUP_GATE_1));
         addOutput(createOutputCentered<SeptagonPort>(mm2px(Vec(30.5, outY2)), module, PhaseWarpedDrums::GROUP_GATE_2));
         addOutput(createOutputCentered<SeptagonPort>(mm2px(Vec(46, outY2)), module, PhaseWarpedDrums::GROUP_GATE_3));
+        addOutput(createOutputCentered<SeptagonPort>(mm2px(Vec(61.5, outY2)), module, PhaseWarpedDrums::FILL_GATE));
         addOutput(createOutputCentered<SeptagonPort>(mm2px(Vec(76, outY2)), module, PhaseWarpedDrums::PHASE_OUT));
         addOutput(createOutputCentered<SeptagonPort>(mm2px(Vec(107, outY2)), module, PhaseWarpedDrums::METRIC_ACCENT_OUT));
     }

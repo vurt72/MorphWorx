@@ -4,6 +4,16 @@
 
 namespace pwmt {
 
+namespace {
+
+static inline float clamp01(float x) {
+    if (x < 0.0f) return 0.0f;
+    if (x > 1.0f) return 1.0f;
+    return x;
+}
+
+} // namespace
+
 void TriggerBuffer::sortByPhase() {
     // Simple insertion sort for small arrays (max 64 elements)
     for (int i = 1; i < count; i++) {
@@ -107,36 +117,109 @@ void TriggerExtractor::applySwing(TriggerBuffer& triggers, float swingAmount, co
     triggers.sortByPhase();
 }
 
-void TriggerExtractor::addRatchets(TriggerBuffer& triggers, float chaos, float density, const MetricSpec& metric, uint32_t seed) {
-    if (chaos < 0.6f) return;
+void TriggerExtractor::addRatchets(TriggerBuffer& triggers, float chaos, float density, const MetricSpec& metric,
+                                   uint32_t seed, const RatchetConfig& config, TriggerBuffer* fillMarkers) {
+    if (chaos < config.chaosThreshold) return;
 
     RandomGenerator rng(seed);
-    float ratchetProb = (chaos - 0.6f) * 2.5f;
-    ratchetProb *= (0.3f + 0.7f * density);
+    float chaosNorm = (chaos - config.chaosThreshold) / std::max(0.001f, 1.0f - config.chaosThreshold);
+    chaosNorm = clamp01(chaosNorm);
+    float effectiveDensity = clamp01(density * config.densityScale);
+    float ratchetProb = chaosNorm * 0.85f * config.probabilityScale;
+    ratchetProb *= (0.3f + 0.7f * effectiveDensity);
+    ratchetProb = clamp01(ratchetProb);
 
     int steps = std::max(1, metric.gridStepsPerBar());
-    // Grid-aware ratchet spacing: 1 step or half-step
+    // Grid-aware ratchet spacing: straight 16th/32nd, optional triplet and reverse fills.
     float gridStep = 1.0f / static_cast<float>(steps);
     float gridHalfStep = 0.5f / static_cast<float>(steps);
+    float gridTripletStep = gridStep / 3.0f;
 
     int originalCount = triggers.count;
     for (int i = 0; i < originalCount; i++) {
         if (!rng.bernoulli(ratchetProb)) continue;
 
-        int extras = rng.bernoulli(0.3f + 0.3f * chaos) ? 2 : 1;
         float basePhase = triggers[i].phase;
         float baseVel = triggers[i].velocity;
-        // Use 32nd note spacing for tight rolls, 16th for looser ones
-        float spacing = rng.bernoulli(0.4f + 0.3f * chaos) ? gridHalfStep : gridStep;
+        enum class RatchetMode {
+            Straight,
+            Triplet,
+            Reverse,
+        };
+        RatchetMode mode = RatchetMode::Straight;
+        float reverseProb = config.allowReverse ? (0.08f + 0.22f * chaosNorm) : 0.0f;
+        float tripletProb = config.allowTriplet ? (0.18f + 0.28f * chaosNorm) : 0.0f;
+        float modePick = rng.uniform();
+        if (config.allowReverse && modePick < reverseProb) {
+            mode = RatchetMode::Reverse;
+        }
+        else if (config.allowTriplet && modePick < reverseProb + tripletProb) {
+            mode = RatchetMode::Triplet;
+        }
+
+        int extras = rng.uniformInt(config.minExtras, config.maxExtras);
+        float spacing = gridHalfStep;
+        switch (mode) {
+            case RatchetMode::Triplet:
+                extras = std::max(2, extras);
+                spacing = gridTripletStep;
+                break;
+            case RatchetMode::Reverse:
+                spacing = rng.bernoulli(0.6f) ? gridHalfStep : gridTripletStep;
+                break;
+            case RatchetMode::Straight:
+            default:
+                spacing = rng.bernoulli(0.45f + 0.25f * chaosNorm) ? gridHalfStep : gridStep;
+                break;
+        }
+
+        float minSpacing = std::max(spacing * 0.75f, gridTripletStep * 0.8f);
+        bool inserted = false;
 
         for (int r = 1; r <= extras; r++) {
-            float ratchetPhase = wrapPhase(basePhase + spacing * r);
-            float ratchetVel = baseVel * (0.55f + rng.uniform(0.0f, 0.25f));
-            if (canPlaceTrigger(ratchetPhase, triggers, gridHalfStep * 0.8f)) {
+            float direction = (mode == RatchetMode::Reverse) ? -1.0f : 1.0f;
+            float ratchetPhase = wrapPhase(basePhase + direction * spacing * static_cast<float>(r));
+            float velScale = (mode == RatchetMode::Reverse)
+                ? (0.48f + 0.12f * static_cast<float>(r))
+                : (0.55f + rng.uniform(0.0f, 0.25f));
+            float ratchetVel = baseVel * velScale;
+            if (canPlaceTrigger(ratchetPhase, triggers, minSpacing)) {
                 triggers.push(ratchetPhase, ratchetVel);
+                inserted = true;
+            }
+        }
+
+        if (inserted && fillMarkers && canPlaceTrigger(basePhase, *fillMarkers, std::max(0.002f, spacing * 1.5f))) {
+            fillMarkers->push(basePhase, 1.0f);
+        }
+    }
+    triggers.sortByPhase();
+}
+
+void TriggerExtractor::applyFlams(TriggerBuffer& triggers, float chaos, const FlamConfig& config,
+                                  uint32_t seed, TriggerBuffer* fillMarkers) {
+    if (chaos < config.minChaos || config.phaseOffset <= 0.0f) return;
+
+    RandomGenerator rng(seed);
+    float chaosNorm = (chaos - config.minChaos) / std::max(0.001f, 1.0f - config.minChaos);
+    chaosNorm = clamp01(chaosNorm);
+    float flamProb = clamp01(chaosNorm * config.maxProbability);
+
+    int originalCount = triggers.count;
+    float markerSpacing = std::max(0.002f, config.phaseOffset * 2.0f);
+    for (int i = 0; i < originalCount; i++) {
+        if (!rng.bernoulli(flamProb)) continue;
+
+        float gracePhase = wrapPhase(triggers[i].phase - config.phaseOffset);
+        float graceVel = triggers[i].velocity * config.velocityScale;
+        if (canPlaceTrigger(gracePhase, triggers, config.phaseOffset * 0.6f)) {
+            triggers.push(gracePhase, graceVel);
+            if (fillMarkers && canPlaceTrigger(triggers[i].phase, *fillMarkers, markerSpacing)) {
+                fillMarkers->push(triggers[i].phase, 1.0f);
             }
         }
     }
+
     triggers.sortByPhase();
 }
 

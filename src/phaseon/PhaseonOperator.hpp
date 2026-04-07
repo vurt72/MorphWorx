@@ -170,6 +170,12 @@ struct Operator {
         cachedPhaseWarpCurve = 1.0f;
     }
 
+    // Block-stable cached dispatch indices — set by prepareBlock() once per block.
+    // tick() reads from these so warpMode/tableIndex switch dispatch uses block-invariant
+    // values rather than re-loading live struct fields on every sample.
+    int   blockWarpMode   = 0;
+    int   blockTableIndex = 0;
+
     // Call once per sample.
     // `fundamentalHz` = note frequency (already including pitch bend, etc.)
     // `modInput`      = summed phase-mod signal from other operators
@@ -177,6 +183,11 @@ struct Operator {
     // `sampleRate`    = host sample rate
     // `currentEnv`    = external envelope follower state (0..2 typical)
     void tick(float fundamentalHz, float modInput, const Wavetable* table, float sampleRate, float currentEnv = 1.0f);
+
+    // Call once BEFORE the per-sample block loop for this operator.
+    // Snapshots warpMode and tableIndex into blockWarpMode/blockTableIndex so that
+    // tick()'s switch dispatches operate on block-invariant cached values.
+    void prepareBlock();
 
     // ── Helpers ─────────────────────────────────────────────────────
     static inline float wrap01(float p) {

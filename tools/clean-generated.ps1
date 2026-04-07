@@ -24,11 +24,34 @@ $pathsToRemove = @(
   (Join-Path $repoRoot 'build'),
   (Join-Path $repoRoot 'build_clean'),
   (Join-Path $repoRoot 'build_ninja'),
-  (Join-Path $repoRoot 'metamodule\build')
+  (Join-Path $repoRoot 'dist'),
+  (Join-Path $repoRoot 'metamodule\build'),
+  (Join-Path $repoRoot 'metamodule\metamodule-plugins'),
+  (Join-Path $repoRoot 'build2\Rack-SDK')
+)
+
+$filesToRemove = @(
+  (Join-Path $repoRoot 'plugin.dll'),
+  (Join-Path $repoRoot 'build_err.txt'),
+  (Join-Path $repoRoot 'build_release.log')
 )
 
 foreach ($path in $pathsToRemove) {
   Remove-DirIfExists $path
+}
+
+foreach ($path in $filesToRemove) {
+  if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+    continue
+  }
+
+  if ($DryRun) {
+    Write-Host "[dry-run] Would remove: $path" -ForegroundColor Yellow
+    continue
+  }
+
+  Write-Host "Removing: $path" -ForegroundColor Cyan
+  Remove-Item -LiteralPath $path -Force
 }
 
 if ($DryRun) {

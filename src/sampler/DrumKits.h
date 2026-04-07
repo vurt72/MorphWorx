@@ -4,7 +4,7 @@
 
 namespace bdkit {
 
-static constexpr int NUM_KITS = 5;
+static constexpr int NUM_KITS = 10;
 static constexpr int NUM_INST = 6;
 static constexpr int NUM_LAYERS = 3;
 

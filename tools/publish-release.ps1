@@ -1,59 +1,294 @@
 # publish-release.ps1
-# Creates or updates the GitHub release for a given tag with the content of a release notes file.
-#
-# Usage:
-#   .\tools\publish-release.ps1 -Token <your_github_pat>
-#
-# Requirements:
-#   - A GitHub Personal Access Token with 'repo' scope.
-#   - The release notes file at docs\release-v0.1.0.md (or edit $NotesFile below).
-#   - The tag v0.1.0 must exist on GitHub (push it first with: git tag v0.1.0; git push origin v0.1.0).
+# Creates or updates a GitHub release for the current MorphWorx version,
+# uploads the built release assets, and packages the Phaseon1 support bundle.
 
 param(
-    [Parameter(Mandatory=$true)]
     [string]$Token,
-
-    [string]$Owner      = "vurt72",
-    [string]$Repo       = "MorphWorx",
-    [string]$TagName    = "v0.1.0",
-    [string]$ReleaseName = "MorphWorx v0.1.0",
-    [string]$NotesFile  = "$PSScriptRoot\..\docs\release-v0.1.0.md"
+    [string]$Owner,
+    [string]$Repo,
+    [string]$TagName,
+    [string]$ReleaseName,
+    [string]$NotesFile,
+    [string]$TargetCommitish,
+    [switch]$Draft,
+    [switch]$PreRelease,
+    [switch]$AllowDirty,
+    [switch]$SkipAssetUpload,
+    [switch]$ValidateOnly
 )
 
 $ErrorActionPreference = "Stop"
 
-$headers = @{
-    Authorization = "Bearer $Token"
-    Accept        = "application/vnd.github+json"
-    "X-GitHub-Api-Version" = "2022-11-28"
+function Get-RepoRoot() {
+    return (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 }
 
-$body = Get-Content -Raw -LiteralPath $NotesFile
+function Get-PluginMetadata([string]$repoRoot) {
+    $pluginJsonPath = Join-Path $repoRoot 'plugin.json'
+    if (-not (Test-Path -LiteralPath $pluginJsonPath -PathType Leaf)) {
+        throw "plugin.json not found at $pluginJsonPath"
+    }
+    return Get-Content -LiteralPath $pluginJsonPath -Raw | ConvertFrom-Json
+}
 
-# Check whether the release exists already.
-$releaseUri = "https://api.github.com/repos/$Owner/$Repo/releases/tags/$TagName"
-try {
-    $existing = Invoke-RestMethod -Uri $releaseUri -Headers $headers -Method GET
-    Write-Host "Release found (id $($existing.id)). Updating body..."
-    $payload = @{ body = $body; name = $ReleaseName } | ConvertTo-Json -Depth 3
-    $updated = Invoke-RestMethod -Uri "https://api.github.com/repos/$Owner/$Repo/releases/$($existing.id)" `
-        -Headers $headers -Method PATCH -Body $payload -ContentType "application/json"
-    Write-Host "Updated: $($updated.html_url)"
-} catch {
-    if ($_.Exception.Response.StatusCode -eq 404) {
-        Write-Host "Release not found. Creating new release..."
-        $payload = @{
-            tag_name         = $TagName
-            name             = $ReleaseName
-            body             = $body
-            draft            = $false
-            prerelease       = $false
-            generate_release_notes = $false
-        } | ConvertTo-Json -Depth 3
-        $created = Invoke-RestMethod -Uri "https://api.github.com/repos/$Owner/$Repo/releases" `
-            -Headers $headers -Method POST -Body $payload -ContentType "application/json"
-        Write-Host "Created: $($created.html_url)"
-    } else {
+function Get-JsonFile([string]$path) {
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        throw "Required JSON file not found: $path"
+    }
+    return Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+}
+
+function Assert-ExactModuleSet([string[]]$actual, [string[]]$expected, [string]$description) {
+    $actualJoined = ($actual | Sort-Object) -join ','
+    $expectedJoined = ($expected | Sort-Object) -join ','
+    if ($actualJoined -ne $expectedJoined) {
+        throw "$description does not match the official MorphWorx module set.`nExpected: $expectedJoined`nActual:   $actualJoined"
+    }
+}
+
+function Get-OriginRepoInfo() {
+    $originUrl = (& git remote get-url origin 2>$null)
+    if (-not $originUrl) {
+        throw "Unable to determine origin remote URL."
+    }
+    if ($originUrl -match 'github\.com[:/](?<owner>[^/]+)/(?<repo>[^/.]+)(?:\.git)?$') {
+        return @{ Owner = $Matches.owner; Repo = $Matches.repo }
+    }
+    throw "Origin remote is not a GitHub repository: $originUrl"
+}
+
+function Get-GitHubToken([string]$suppliedToken) {
+    if (-not [string]::IsNullOrWhiteSpace($suppliedToken)) {
+        return $suppliedToken
+    }
+
+    $creds = "protocol=https`nhost=github.com`n" | git credential fill
+    $tokenLine = $creds | Select-String '^password='
+    if ($tokenLine) {
+        return (($tokenLine -replace '^password=', '').Trim())
+    }
+
+    throw "No GitHub token supplied and no github.com credential could be retrieved from git credential storage."
+}
+
+function Assert-CleanTree([switch]$allowDirty) {
+    if ($allowDirty) {
+        return
+    }
+    $status = (& git status --porcelain)
+    if ($status) {
+        throw "Working tree is not clean. Commit or stash release changes first, or rerun with -AllowDirty if you intentionally want to publish mismatched artifacts."
+    }
+}
+
+function Assert-FileExists([string]$path, [string]$description) {
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        throw "$description not found: $path"
+    }
+}
+
+function New-Phaseon1Bundle([string]$repoRoot, [string]$version) {
+    $outputZip = Join-Path $repoRoot (Join-Path 'dist' 'MorphWorx-phaseon1-sdcard.zip')
+    $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("MorphWorx-phaseon1-" + [System.Guid]::NewGuid().ToString('N'))
+    $bundleRoot = Join-Path $tempRoot 'phaseon1'
+    New-Item -ItemType Directory -Path $bundleRoot -Force | Out-Null
+
+    try {
+        $bankCandidates = @(
+            (Join-Path $repoRoot 'phaseon1\Phbank.bnk'),
+            (Join-Path $repoRoot 'userwaveforms\Phbank.bnk')
+        )
+        $wavetableCandidates = @(
+            (Join-Path $repoRoot 'phaseon1\phaseon1.wav'),
+            (Join-Path $repoRoot 'userwaveforms\phaseon1.wav')
+        )
+
+        $bankSource = $bankCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+        $wavetableSource = $wavetableCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+
+        if (-not $bankSource) {
+            throw "Could not find Phaseon1 bank source in phaseon1/Phbank.bnk or userwaveforms/Phbank.bnk"
+        }
+        if (-not $wavetableSource) {
+            throw "Could not find Phaseon1 default wavetable source in phaseon1/phaseon1.wav or userwaveforms/phaseon1.wav"
+        }
+
+        Copy-Item -LiteralPath $bankSource -Destination (Join-Path $bundleRoot 'Phbank.bnk') -Force
+        Copy-Item -LiteralPath $wavetableSource -Destination (Join-Path $bundleRoot 'phaseon1.wav') -Force
+
+        $extraTables = Get-ChildItem -LiteralPath (Join-Path $repoRoot 'userwaveforms') -Filter 'xs_*.wav' -File -ErrorAction SilentlyContinue
+        foreach ($table in $extraTables) {
+            Copy-Item -LiteralPath $table.FullName -Destination (Join-Path $bundleRoot $table.Name) -Force
+        }
+
+        if (Test-Path -LiteralPath $outputZip -PathType Leaf) {
+            Remove-Item -LiteralPath $outputZip -Force
+        }
+
+        Compress-Archive -Path $bundleRoot -DestinationPath $outputZip -CompressionLevel Optimal
+        Assert-FileExists $outputZip 'Phaseon1 support bundle'
+        return $outputZip
+    }
+    finally {
+        if (Test-Path -LiteralPath $tempRoot) {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force
+        }
+    }
+}
+
+function New-GitHubHeaders([string]$token) {
+    return @{
+        Authorization = "Bearer $token"
+        Accept = "application/vnd.github+json"
+        "X-GitHub-Api-Version" = "2022-11-28"
+    }
+}
+
+function Invoke-GitHubJson([string]$uri, [hashtable]$headers, [string]$method, $payload) {
+    if ($null -eq $payload) {
+        return Invoke-RestMethod -Uri $uri -Headers $headers -Method $method
+    }
+    $json = $payload | ConvertTo-Json -Depth 8
+    return Invoke-RestMethod -Uri $uri -Headers $headers -Method $method -Body $json -ContentType 'application/json'
+}
+
+function Get-ReleaseByTag([string]$owner, [string]$repo, [string]$tagName, [hashtable]$headers) {
+    $releaseUri = "https://api.github.com/repos/$owner/$repo/releases/tags/$tagName"
+    try {
+        return Invoke-RestMethod -Uri $releaseUri -Headers $headers -Method GET
+    }
+    catch {
+        $response = $_.Exception.Response
+        if ($response -and $response.StatusCode -eq 404) {
+            return $null
+        }
         throw
     }
 }
+
+function Remove-ExistingReleaseAsset($release, [hashtable]$headers, [string]$assetName) {
+    $existingAsset = $release.assets | Where-Object { $_.name -eq $assetName } | Select-Object -First 1
+    if ($existingAsset) {
+        $deleteUri = "https://api.github.com/repos/$Owner/$Repo/releases/assets/$($existingAsset.id)"
+        Invoke-RestMethod -Uri $deleteUri -Headers $headers -Method DELETE | Out-Null
+    }
+}
+
+function Upload-ReleaseAsset($release, [hashtable]$headers, [string]$filePath, [string]$assetName) {
+    Assert-FileExists $filePath "Release asset"
+    Remove-ExistingReleaseAsset $release $headers $assetName
+
+    $uploadUrl = $release.upload_url -replace '\{\?name,label\}$', ''
+    $uri = "$uploadUrl?name=$([uri]::EscapeDataString($assetName))"
+    $contentType = 'application/octet-stream'
+    $body = [System.IO.File]::ReadAllBytes($filePath)
+    Invoke-RestMethod -Uri $uri -Headers $headers -Method POST -Body $body -ContentType $contentType | Out-Null
+    Write-Host "Uploaded asset: $assetName" -ForegroundColor Green
+}
+
+$repoRoot = Get-RepoRoot
+$plugin = Get-PluginMetadata $repoRoot
+$metaPlugin = Get-JsonFile (Join-Path $repoRoot 'metamodule\plugin-mm.json')
+$version = [string]$plugin.version
+if ([string]::IsNullOrWhiteSpace($version)) {
+    throw "plugin.json version is empty."
+}
+
+$originRepo = Get-OriginRepoInfo
+if ([string]::IsNullOrWhiteSpace($Owner)) { $Owner = $originRepo.Owner }
+if ([string]::IsNullOrWhiteSpace($Repo)) { $Repo = $originRepo.Repo }
+if ([string]::IsNullOrWhiteSpace($TagName)) { $TagName = "v$version" }
+if ([string]::IsNullOrWhiteSpace($ReleaseName)) { $ReleaseName = "MorphWorx v$version" }
+if ([string]::IsNullOrWhiteSpace($NotesFile)) { $NotesFile = Join-Path $repoRoot ("docs\release-v$version.md") }
+if ([string]::IsNullOrWhiteSpace($TargetCommitish)) { $TargetCommitish = (& git rev-parse HEAD).Trim() }
+
+Assert-CleanTree -allowDirty:$AllowDirty
+Assert-FileExists $NotesFile 'Release notes file'
+
+$expectedRackModules = @(
+    'Amenolith',
+    'Ferroklast',
+    'FerroklastMM',
+    'Minimalith',
+    'Phaseon1',
+    'Septagon',
+    'SlideWyrm',
+    'Trigonomicon',
+    'Xenostasis'
+)
+$expectedMetaModules = @(
+    'Amenolith',
+    'FerroklastMM',
+    'Minimalith',
+    'Phaseon1',
+    'Septagon',
+    'SlideWyrm',
+    'Trigonomicon',
+    'Xenostasis'
+)
+
+$rackModules = @($plugin.modules | ForEach-Object { [string]$_.slug })
+$metaModules = @($metaPlugin.MetaModuleIncludedModules | ForEach-Object { [string]$_.slug })
+Assert-ExactModuleSet -actual $rackModules -expected $expectedRackModules -description 'plugin.json module list'
+Assert-ExactModuleSet -actual $metaModules -expected $expectedMetaModules -description 'metamodule/plugin-mm.json module list'
+
+$rackAssetPath = Join-Path $repoRoot (Join-Path 'dist' ("MorphWorx-$version-win-x64.vcvplugin"))
+$metaModuleAssetPath = Join-Path $repoRoot (Join-Path 'metamodule\metamodule-plugins' 'MorphWorx.mmplugin')
+$phaseonBundlePath = New-Phaseon1Bundle -repoRoot $repoRoot -version $version
+
+Assert-FileExists $rackAssetPath 'Rack release artifact'
+Assert-FileExists $metaModuleAssetPath 'MetaModule release artifact'
+
+Write-Host "Validated release inputs:" -ForegroundColor Cyan
+Write-Host "  Version: $version"
+Write-Host "  Tag: $TagName"
+Write-Host "  Rack modules: $($rackModules -join ', ')"
+Write-Host "  MetaModule modules: $($metaModules -join ', ')"
+Write-Host "  Notes: $NotesFile"
+Write-Host "  Rack asset: $rackAssetPath"
+Write-Host "  MetaModule asset: $metaModuleAssetPath"
+Write-Host "  Phaseon1 bundle: $phaseonBundlePath"
+
+if ($ValidateOnly) {
+    Write-Host "Validation only complete. No GitHub changes were made." -ForegroundColor Yellow
+    return
+}
+
+$resolvedToken = Get-GitHubToken $Token
+$headers = New-GitHubHeaders $resolvedToken
+$body = Get-Content -Raw -LiteralPath $NotesFile
+
+$release = Get-ReleaseByTag -owner $Owner -repo $Repo -tagName $TagName -headers $headers
+if ($release) {
+    Write-Host "Release found (id $($release.id)). Updating metadata..." -ForegroundColor Cyan
+    $payload = @{
+        body = $body
+        name = $ReleaseName
+        draft = [bool]$Draft
+        prerelease = [bool]$PreRelease
+    }
+    $release = Invoke-GitHubJson -uri "https://api.github.com/repos/$Owner/$Repo/releases/$($release.id)" -headers $headers -method PATCH -payload $payload
+}
+else {
+    Write-Host "Release not found. Creating new release..." -ForegroundColor Cyan
+    $payload = @{
+        tag_name = $TagName
+        target_commitish = $TargetCommitish
+        name = $ReleaseName
+        body = $body
+        draft = [bool]$Draft
+        prerelease = [bool]$PreRelease
+        generate_release_notes = $false
+    }
+    $release = Invoke-GitHubJson -uri "https://api.github.com/repos/$Owner/$Repo/releases" -headers $headers -method POST -payload $payload
+}
+
+Write-Host "Release URL: $($release.html_url)" -ForegroundColor Green
+
+if (-not $SkipAssetUpload) {
+    Upload-ReleaseAsset $release $headers $rackAssetPath ([System.IO.Path]::GetFileName($rackAssetPath))
+    Upload-ReleaseAsset $release $headers $metaModuleAssetPath ("MorphWorx-$version.mmplugin")
+    Upload-ReleaseAsset $release $headers $phaseonBundlePath ([System.IO.Path]::GetFileName($phaseonBundlePath))
+}
+
+Write-Host "GitHub release publish complete." -ForegroundColor Green

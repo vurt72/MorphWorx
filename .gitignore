@@ -3,8 +3,12 @@
 # ==============================
 dist/
 build/
+build_clean/
+build_ninja/
+build2/Rack-SDK/
 metamodule/build/
 metamodule/metamodule-plugins/
+build_err.txt
 
 # ==============================
 # IDE / Editor
