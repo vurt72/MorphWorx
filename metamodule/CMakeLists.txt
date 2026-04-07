@@ -158,7 +158,7 @@ add_custom_target(CLEANUP_MMPLUGIN_PACKAGE ALL
 )
 
 # Always validate plugin-mm.json using Python (works on Windows without MSYS2/jq).
-add_custom_target(VALIDATE_PLUGIN_MM_JSON ALL
+add_custom_target(VALIDATE_MORPHWORX_PLUGIN_MM_JSON ALL
     COMMAND python -c "import json, pathlib; p=pathlib.Path(r'${CMAKE_CURRENT_LIST_DIR}/plugin-mm.json'); json.loads(p.read_text(encoding='utf-8-sig'));"
     VERBATIM
     USES_TERMINAL
