@@ -54,7 +54,7 @@ jobs:
     strategy:
       fail-fast: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: recursive
       - name: Build plugin
@@ -82,7 +82,7 @@ jobs:
     strategy:
       fail-fast: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: recursive
       - name: Build plugin
@@ -107,7 +107,7 @@ jobs:
     strategy:
       fail-fast: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: recursive
       - name: Get Rack-SDK
@@ -136,7 +136,7 @@ jobs:
     strategy:
       fail-fast: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: recursive
       - name: Get Rack-SDK
@@ -163,12 +163,13 @@ jobs:
     name: Publish plugin
     runs-on: ubuntu-24.04
     needs: [build-lin-x64, build-win-x64, build-mac-x64, build-mac-arm64]
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: _artifacts
-      - uses: FranzDiebold/github-env-vars-action@v2
-      - uses: softprops/action-gh-release@v1
+      - uses: softprops/action-gh-release@v2
         with:
           name: "Development Build: ${{ github.ref_name }}"
           body: "VCV plugin version as of tag ${{ github.ref_name }}"
