@@ -15,6 +15,7 @@ build_err.txt
 # ==============================
 .vscode/
 .history/
+.firecrawl/
 
 # ==============================
 # Temporary / Backup Files
