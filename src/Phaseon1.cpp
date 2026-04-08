@@ -2339,16 +2339,16 @@ struct Phaseon1 : Module {
 		}
 		if (wtFormMode == 1) {
 			timbreBase = clamp01(0.08f * wtFormBoost * growlBoost + timbreBase * (1.0f - 0.28f * wtFormBoost * growlBoost));
-			formAmtBase = clamp01(formAmtBase + 0.05f * wtFormBoost * growlBoost + colorAmt * 0.10f * wtFormBoost * growlBoost + syncEnvAmount * 0.05f * growlBoost);
+			formAmtBase = clamp01(formAmtBase + 0.05f * wtFormBoost * growlBoost + syncEnvAmount * 0.05f * growlBoost);
 		}
 		else if (wtFormMode == 2) {
 			timbreBase = clamp01(0.14f * wtFormBoost * yoiBoost + timbreBase * (1.0f - 0.16f * wtFormBoost * yoiBoost) + syncEnvAmount * 0.12f * wtFormBoost * yoiBoost);
-			formAmtBase = clamp01(formAmtBase + 0.18f * wtFormBoost * yoiBoost + 0.22f * colorAmt * wtFormBoost * yoiBoost + syncEnvAmount * 0.08f * yoiBoost);
+			formAmtBase = clamp01(formAmtBase + 0.18f * wtFormBoost * yoiBoost + syncEnvAmount * 0.08f * yoiBoost);
 		}
 		else if (wtFormMode == 3) {
 			wtScrollStepped = true;
 			timbreBase = clamp01(0.05f * wtFormBoost * tearBoost + timbreBase * (1.0f - 0.22f * wtFormBoost * tearBoost));
-			formAmtBase = clamp01(formAmtBase + 0.02f * wtFormBoost * tearBoost + 0.08f * colorAmt * wtFormBoost * tearBoost);
+			formAmtBase = clamp01(formAmtBase + 0.02f * wtFormBoost * tearBoost);
 		}
 		// TIMBRE → FM complexity in non-WT mode.
 		// Additive offset centered on 0.5: center = 0 (backward compat), sweep always audible
@@ -2409,10 +2409,9 @@ struct Phaseon1 : Module {
 			if (warp > 0.001f) {
 				ops[i].domain = phaseon::OpDomain::WT_PD;
 				ops[i].warpMode = 6; // Classic PD hybrid
-				// COLOR enhances PD depth and waveshaping (backward compatible: colorAmt=0 = no change).
-				ops[i].pdAmount = warp * (1.0f + colorAmt * 1.5f);
-				ops[i].wsMix = 0.30f * complexAmt + 0.25f * colorAmt * complexAmt;
-				ops[i].wsDrive = 1.0f + 2.5f * complexAmt + 1.5f * colorAmt * complexAmt;
+				ops[i].pdAmount = warp;
+				ops[i].wsMix = 0.30f * complexAmt;
+				ops[i].wsDrive = 1.0f + 2.5f * complexAmt;
 			}
 			else {
 				ops[i].domain = phaseon::OpDomain::WT_PM;
@@ -2426,29 +2425,29 @@ struct Phaseon1 : Module {
 			case 1:
 				if (tableIndex == 0) {
 					ops[i].warpMode = 6;
-					ops[i].pdAmount = clamp01(ops[i].pdAmount + wtFormBoost * growlBoost * (complexAmt * (0.18f + 0.18f * idxNorm) + colorAmt * 0.06f + syncEnvAmount * 0.04f));
-					ops[i].wsMix = clamp01(std::max(ops[i].wsMix, wtFormBoost * growlBoost * (0.10f * complexAmt + 0.06f * colorAmt)));
-					ops[i].wsDrive = std::max(ops[i].wsDrive, 1.0f + wtFormBoost * growlBoost * (0.80f * complexAmt + 0.55f * colorAmt));
+					ops[i].pdAmount = clamp01(ops[i].pdAmount + wtFormBoost * growlBoost * (complexAmt * (0.18f + 0.18f * idxNorm) + syncEnvAmount * 0.04f));
+					ops[i].wsMix = clamp01(std::max(ops[i].wsMix, wtFormBoost * growlBoost * (0.10f * complexAmt)));
+					ops[i].wsDrive = std::max(ops[i].wsDrive, 1.0f + wtFormBoost * growlBoost * (0.80f * complexAmt));
 				}
-				ops[i].feedbackWarmth = clamp01(ops[i].feedbackWarmth + wtFormBoost * growlBoost * (0.10f + 0.18f * complexAmt + 0.08f * colorAmt));
+				ops[i].feedbackWarmth = clamp01(ops[i].feedbackWarmth + wtFormBoost * growlBoost * (0.10f + 0.18f * complexAmt));
 				break;
 			case 2:
 				if (tableIndex == 0) {
 					ops[i].warpMode = 6;
-					ops[i].pdAmount = clamp01(ops[i].pdAmount + wtFormBoost * yoiBoost * (0.18f + 0.28f * complexAmt + 0.16f * syncEnvAmount + 0.10f * colorAmt));
+					ops[i].pdAmount = clamp01(ops[i].pdAmount + wtFormBoost * yoiBoost * (0.18f + 0.28f * complexAmt + 0.16f * syncEnvAmount));
 					ops[i].wsMix = clamp01(std::max(ops[i].wsMix, wtFormBoost * yoiBoost * (0.10f * complexAmt + 0.12f * syncEnvAmount)));
-					ops[i].wsDrive = std::max(ops[i].wsDrive, 1.0f + wtFormBoost * (0.42f * complexAmt + 0.38f * syncEnvAmount + 0.18f * colorAmt));
+					ops[i].wsDrive = std::max(ops[i].wsDrive, 1.0f + wtFormBoost * (0.42f * complexAmt + 0.38f * syncEnvAmount));
 				}
 				ops[i].feedbackWarmth = clamp01(ops[i].feedbackWarmth + wtFormBoost * (0.03f + 0.05f * complexAmt));
 				break;
 			case 3:
 				if (tableIndex == 0) {
 					ops[i].warpMode = (i & 1) ? 5 : 4;
-					ops[i].pdAmount = clamp01(ops[i].pdAmount + wtFormBoost * tearBoost * (0.20f + 0.30f * complexAmt + 0.10f * colorAmt));
-					ops[i].wsMix = clamp01(std::max(ops[i].wsMix, wtFormBoost * tearBoost * (0.12f * complexAmt + 0.08f * colorAmt)));
-					ops[i].wsDrive = std::max(ops[i].wsDrive, 1.0f + wtFormBoost * tearBoost * (1.10f * complexAmt + 0.60f * colorAmt));
+					ops[i].pdAmount = clamp01(ops[i].pdAmount + wtFormBoost * tearBoost * (0.20f + 0.30f * complexAmt));
+					ops[i].wsMix = clamp01(std::max(ops[i].wsMix, wtFormBoost * tearBoost * (0.12f * complexAmt)));
+					ops[i].wsDrive = std::max(ops[i].wsDrive, 1.0f + wtFormBoost * tearBoost * (1.10f * complexAmt));
 				}
-				ops[i].tear = clamp01(std::max(ops[i].tear, wtFormBoost * tearBoost * (0.22f + 0.34f * complexAmt + 0.12f * colorAmt)));
+				ops[i].tear = clamp01(std::max(ops[i].tear, wtFormBoost * tearBoost * (0.22f + 0.34f * complexAmt)));
 				ops[i].feedbackWarmth = clamp01(ops[i].feedbackWarmth + wtFormBoost * tearBoost * (0.04f + 0.10f * complexAmt));
 				break;
 			default:
@@ -2489,16 +2488,9 @@ struct Phaseon1 : Module {
 			ops[i].cachedPhaseInc = (fundamentalHz * ops[i].ratio) / kInternalRate;
 		}
 
-		// COLOR → FM ratio inharmonicity (only when no WT operators are active).
-		// Golden-ratio-derived pitch offsets spread upper operators into slight inharmonicity;
-		// op0 (carrier) stays clean to preserve pitch tracking.
-		if (colorAmt > 0.001f && !anyWT) {
-			static constexpr float kInharmOffset[4] = { 0.0f, 0.170f, 0.414f, 0.832f };
-			for (int i = 0; i < 4; ++i) {
-				ops[i].ratio += colorAmt * kInharmOffset[i] * ops[i].ratio * 0.3f;
-				ops[i].cachedPhaseInc = (fundamentalHz * ops[i].ratio) / kInternalRate;
-			}
-		}
+		// COLOR stays spectral only.
+		// Do not retune operator ratios here: even non-carrier ratio offsets can make
+		// some FM presets feel pitch-unstable, which is surprising for a tone-color macro.
 
 		float opLevelTrim[4];
 #ifdef METAMODULE
@@ -2628,13 +2620,13 @@ struct Phaseon1 : Module {
 			float timbreMod = applyMod01(timbreBase, lfoOut, wtFrameModTrim);
 			float formAmtMod = applyMod01(formAmtBase, lfoOut, vowelModTrim);
 			if (wtFormMode == 1) {
-				formAmtMod = clamp01(formAmtMod + wtFormBoost * growlBoost * (0.08f * colorAmt + 0.06f * complexAmt + 0.05f * syncEnvAmount));
+				formAmtMod = clamp01(formAmtMod + wtFormBoost * growlBoost * (0.06f * complexAmt + 0.05f * syncEnvAmount));
 			}
 			else if (wtFormMode == 2) {
-				formAmtMod = clamp01(formAmtMod + wtFormBoost * yoiBoost * (0.18f + 0.24f * colorAmt + 0.16f * syncEnvAmount));
+				formAmtMod = clamp01(formAmtMod + wtFormBoost * yoiBoost * (0.18f + 0.16f * syncEnvAmount));
 			}
 			else if (wtFormMode == 3) {
-				formAmtMod = clamp01(formAmtMod + wtFormBoost * tearBoost * (0.04f * colorAmt));
+				formAmtMod = clamp01(formAmtMod);
 			}
 			formAmtMod = clamp01(formAmtMod * rndFormantMul);
 			float edgeNow = applyMod01(edgeBase, lfoOut, op1FbModTrim * 2.0f);
@@ -2657,7 +2649,7 @@ struct Phaseon1 : Module {
 				if (wtFormMode == 1) {
 					float growlEnv = clamp01(macroEnv + syncEnvAmount * 0.18f);
 					float growlRegion = clamp01((fp - 0.45f) * (1.0f / 0.55f));
-					fp = clamp01(0.08f * wtFormBoost * growlBoost + fp * (1.0f - 0.28f * wtFormBoost * growlBoost) + wtFormBoost * growlBoost * (colorAmt * 0.06f * growlRegion + growlEnv * 0.04f));
+					fp = clamp01(0.08f * wtFormBoost * growlBoost + fp * (1.0f - 0.28f * wtFormBoost * growlBoost) + wtFormBoost * growlBoost * (growlEnv * 0.04f));
 					ops[oi].phaseWarp = finalWarp * (1.0f + wtFormBoost * growlBoost * (0.18f * growlRegion + 0.08f * complexAmt + 0.04f * growlEnv));
 				}
 				else if (wtFormMode == 2) {
@@ -2669,8 +2661,8 @@ struct Phaseon1 : Module {
 				}
 				else if (wtFormMode == 3) {
 					fp = clamp01(0.05f * wtFormBoost * tearBoost + fp * (1.0f - 0.22f * wtFormBoost * tearBoost));
-					ops[oi].phaseWarp = finalWarp * (1.0f + wtFormBoost * tearBoost * (0.18f * complexAmt + 0.08f * colorAmt));
-					ops[oi].tear = clamp01(tearWet1 + wtFormBoost * tearBoost * (0.22f + 0.36f * complexAmt + 0.08f * colorAmt));
+					ops[oi].phaseWarp = finalWarp * (1.0f + wtFormBoost * tearBoost * (0.18f * complexAmt));
+					ops[oi].tear = clamp01(tearWet1 + wtFormBoost * tearBoost * (0.22f + 0.36f * complexAmt));
 				}
 				// wtFormMode == 0: phaseWarp already set to warpMapped in block preamble;
 				// no per-sample write needed, preserving Operator::tick() warp cache.
@@ -3107,19 +3099,13 @@ struct Phaseon1 : Module {
 			}
 			}
 
-			// COLOR → WT wavefold: spectral enrichment on wavetable operators.
-			// sin() fold applied post-tick with quadratic blend so it's gentle at low Color values.
+			// COLOR: consistent global spectral enrichment.
+			// Keep it pitch-safe by applying the same post-mix shaping regardless of preset architecture.
+			// This avoids the old preset-dependent behavior where COLOR sometimes felt like detune,
+			// pitch drift, or no-op depending on WT/PD/tear routing.
+			float colorMix = 0.f;
 			if (colorAmt > 0.001f) {
-				float foldMix = colorAmt * colorAmt;
-				float foldDrive = 1.0f + colorAmt * 6.28318f; // up to 2π extra drive at max Color
-				for (int oi = 0; oi < 4; ++oi) {
-					if (ops[oi].tableIndex == 0) {
-						float foldedL = phaseon::phaseon_fast_sin_w0(ops[oi].outputL * foldDrive);
-						float foldedR = phaseon::phaseon_fast_sin_w0(ops[oi].outputR * foldDrive);
-						ops[oi].outputL += (foldedL - ops[oi].outputL) * foldMix;
-						ops[oi].outputR += (foldedR - ops[oi].outputR) * foldMix;
-					}
-				}
+				colorMix = 0.42f * colorAmt * colorAmt;
 			}
 
 			// Build carrier/mod sums, then apply Morph as carrier↔mod blend.
@@ -3139,6 +3125,13 @@ struct Phaseon1 : Module {
 			float carrierScale = cal.carrierTrim * (1.0f - 0.20f * algoMorph);
 			float outL = carriersL * carrierScale + modsL * modMix;
 			float outR = carriersR * carrierScale + modsR * modMix;
+			if (colorMix > 0.f) {
+				float colorDrive = 1.0f + colorAmt * 4.5f;
+				float shapedL = phaseon::phaseon_fast_sin_w0(outL * colorDrive);
+				float shapedR = phaseon::phaseon_fast_sin_w0(outR * colorDrive);
+				outL += (shapedL - outL) * colorMix;
+				outR += (shapedR - outR) * colorMix;
+			}
 
 			// Always-on SVF filter first.
 			float monoIn = 0.5f * (outL + outR);
@@ -3153,8 +3146,7 @@ struct Phaseon1 : Module {
 			masterBusR.splitSub(outR, cleanSubR, midHighR);
 
 			// Destructive path (mids/highs only): formant then crusher.
-			// COLOR adds a subtle formant tint: shifts the vowel center by up to 0.20 frame units.
-			float timbreModFormant = clamp01(timbreMod + colorAmt * 0.20f);
+			float timbreModFormant = clamp01(timbreMod);
 			if (!std::isfinite(timbreModFormant)) timbreModFormant = 0.f;
 			if (!std::isfinite(formAmtMod)) formAmtMod = 0.f;
 			formAmtMod = clamp01(formAmtMod);

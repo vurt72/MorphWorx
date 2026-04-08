@@ -153,7 +153,7 @@ output_A = sin(phase_A + I × output_B)
 | **EDGE** | Operator self-feedback (each operator feeds back into its own modulation input). Creates distortion and edge. Goes from smooth to chaotic, depends on WARMTH for saturation colour. |
 | **MORPH** | Scales the FM index an additional 0–90%, giving a second dimension of spectral openness alongside DENSITY. |
 | **COMPLEX** | Adds phase-distortion (PD) warping and gentle waveshaping per operator. Layers timbral complexity on top of the FM routing. |
-| **COLOR** | At zero: no effect. Increasing: spreads upper operator ratios into slight inharmonicity (golden-ratio-derived offsets), or — in COLOR+COMPLEX together — deepens PD depth and drive. In WT-mode operators, COLOR is inactive on ratios. |
+| **COLOR** | At zero: no effect. Increasing: adds a global pitch-safe brightening/roughening pass after the operator mix. It does not retune operator ratios or change preset routing. |
 | **WARMTH** | Controls the saturation character of operator self-feedback. Low = gentle overtones. High = warm distorted edges, essential for dubstep-style growls. |
 | **FM ENV AMT** | How much the AR envelope drives the FM index over time. High values give a bright attack bloom that decays back to the knob-set FM depth. |
 | **SYNC ENV.F** | How much the AR envelope drives the carrier frequency via phase synchronisation. Adds a detuned pitch transient on attack. |
@@ -187,7 +187,7 @@ Example: if the fundamental is A3 (220 Hz) and an operator has CHARACTER ratio 2
 | **MOTION** | 0.26 | Stereo width and unison detune. At zero: mono. Increasing: subtle stereo spread per operator. Higher values initiate a second voice for each operator with slight detuning. |
 | **MORPH** | 0.52 | Morphs the carrier/modulator FM index relationship. Centre = balanced, right = more open/complex. |
 | **COMPLEX** | 0.00 | Adds phase distortion depth and wave folding. Works multiplicatively with COLOR. |
-| **COLOR** | 0.00 | Spectral character. In FM mode: introduces inharmonic ratio offsets. With COMPLEX: extends PD and waveshaping depth. |
+| **COLOR** | 0.00 | Spectral character. Adds a consistent global brightening/roughening pass without changing pitch. |
 | **VOLUME** | 0.50 | Master output level. 0.5 = unity gain. 1.0 ≈ +12 dB. |
 
 ### Refinement Row
