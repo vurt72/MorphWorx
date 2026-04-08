@@ -1235,6 +1235,30 @@ struct Phaseon1 : Module {
 		std::vector<std::string> volumes = metaModuleVolumeSearchOrder();
 		return volumes.empty() ? std::string("sdc:/") : volumes.front();
 	}
+
+	static bool metaModulePathExists(const std::string& path) {
+		if (path.empty()) return false;
+		if (system::exists(path)) return true;
+		if (!MetaModule::Filesystem::is_local_path(path)) {
+			std::string absolutePath = system::getAbsolute(path);
+			if (!absolutePath.empty() && absolutePath != path) {
+				return system::exists(absolutePath);
+			}
+		}
+		return false;
+	}
+
+	static std::string resolveMetaModuleOpenPath(const std::string& path) {
+		if (path.empty()) return path;
+		if (MetaModule::Filesystem::is_local_path(path)) return path;
+		if (system::exists(path)) return path;
+		std::string absolutePath = system::getAbsolute(path);
+		return absolutePath.empty() ? path : absolutePath;
+	}
+
+	static std::string bundledMetaModulePath(const char* relativePath) {
+		return resolveMetaModuleOpenPath(asset::plugin(pluginInstance, relativePath));
+	}
 #endif
 
 	std::string bankPath() const {
@@ -1679,31 +1703,39 @@ struct Phaseon1 : Module {
 
 	bool bankLoad() {
 		std::string primaryPath = bankPath();
-		if (bankLoadFromPath(primaryPath)) {
+	#ifdef METAMODULE
+		if (metaModulePathExists(primaryPath) && bankLoadFromPath(primaryPath)) {
 			return true;
 		}
-#ifdef METAMODULE
+		{
+			std::string bundledPath = bundledMetaModulePath("userwaveforms/Phbank.bnk");
+			if (bundledPath != primaryPath && metaModulePathExists(bundledPath) && bankLoadFromPath(bundledPath)) {
+				return true;
+			}
+		}
+
 		std::vector<std::string> candidatePaths;
-		appendUniqueString(candidatePaths, primaryPath);
-		for (const std::string& volume : metaModuleVolumeSearchOrder()) {
+		std::vector<std::string> volumes = metaModuleVolumeSearchOrder();
+		if (!volumes.empty()) {
+			volumes.erase(volumes.begin());
+		}
+		for (const std::string& volume : volumes) {
 			appendUniqueString(candidatePaths, volume + "phaseon1/Phbank.bnk");
 			appendUniqueString(candidatePaths, volume + "phaseon1/phbank.bnk");
 			appendUniqueString(candidatePaths, volume + "MorphWorx/phbank.bnk");
 			appendUniqueString(candidatePaths, volume + "morphworx/phbank.bnk");
 		}
 		for (const std::string& candidate : candidatePaths) {
-			if (candidate == primaryPath) continue;
+			if (candidate == primaryPath || !metaModulePathExists(candidate)) continue;
 			if (bankLoadFromPath(candidate)) {
 				return true;
 			}
 		}
-		{
-			std::string bundledPath = asset::plugin(pluginInstance, "userwaveforms/Phbank.bnk");
-			if (bundledPath != primaryPath && bankLoadFromPath(bundledPath)) {
-				return true;
-			}
+	#else
+		if (bankLoadFromPath(primaryPath)) {
+			return true;
 		}
-#else
+
 		// Rack fallback: try the preset bank bundled inside the plugin package.
 		// This auto-loads on first use without requiring the user to manually place the file.
 		{
@@ -1712,7 +1744,7 @@ struct Phaseon1 : Module {
 				return true;
 			}
 		}
-#endif
+	#endif
 		return false;
 	}
 
@@ -1993,20 +2025,23 @@ struct Phaseon1 : Module {
 		if (!hasWt.load(std::memory_order_acquire)) {
 			std::string err; 
 #ifdef METAMODULE
-			// Search the current patch volume first, then all other local volumes.
+			// Prefer a same-volume override, then the bundled factory wavetable,
+			// then any other local volumes as a legacy fallback.
 			std::vector<std::string> candidateWtPaths;
 			appendUniqueString(candidateWtPaths, defaultWtPath());
-			for (const std::string& volume : metaModuleVolumeSearchOrder()) {
+			appendUniqueString(candidateWtPaths, bundledMetaModulePath("userwaveforms/phaseon1.wav"));
+			std::vector<std::string> volumes = metaModuleVolumeSearchOrder();
+			if (!volumes.empty()) {
+				volumes.erase(volumes.begin());
+			}
+			for (const std::string& volume : volumes) {
 				appendUniqueString(candidateWtPaths, volume + "phaseon1/phaseon1.wav");
 			}
 			for (const std::string& candidate : candidateWtPaths) {
+				if (!metaModulePathExists(candidate)) continue;
 				if (loadWavetableFile(candidate, &err, false)) {
 					break;
 				}
-			}
-			if (!hasWt.load(std::memory_order_acquire)) {
-				std::string bundledWtPath = asset::plugin(pluginInstance, "userwaveforms/phaseon1.wav");
-				loadWavetableFile(bundledWtPath, &err, false);
 			}
 #else
 			// On Rack, load from the plugin-bundled userwaveforms folder so it ships inside the .vcvplugin.

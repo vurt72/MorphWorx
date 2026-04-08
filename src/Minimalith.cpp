@@ -157,6 +157,30 @@ struct Minimalith : Module {
         std::vector<std::string> volumes = mmVolumeSearchOrder();
         return volumes.empty() ? std::string("sdc:/") : volumes.front();
     }
+
+    static bool mmPathExists(const std::string& path) {
+        if (path.empty()) return false;
+        if (system::exists(path)) return true;
+        if (!MetaModule::Filesystem::is_local_path(path)) {
+            std::string absolutePath = system::getAbsolute(path);
+            if (!absolutePath.empty() && absolutePath != path) {
+                return system::exists(absolutePath);
+            }
+        }
+        return false;
+    }
+
+    static std::string mmResolveOpenPath(const std::string& path) {
+        if (path.empty()) return path;
+        if (MetaModule::Filesystem::is_local_path(path)) return path;
+        if (system::exists(path)) return path;
+        std::string absolutePath = system::getAbsolute(path);
+        return absolutePath.empty() ? path : absolutePath;
+    }
+
+    static std::string mmBundledPluginPath(const char* relativePath) {
+        return mmResolveOpenPath(asset::plugin(pluginInstance, relativePath));
+    }
 #endif
 
     static float mlExpMap01(float x, float minVal, float maxVal) {
@@ -828,19 +852,31 @@ struct Minimalith : Module {
 #ifdef METAMODULE
         auto tryLoadFactoryPath = [&](const std::string& candidate) {
             if (candidate.empty()) return false;
-            loadBankAndPatch(candidate, startupPatch);
+            if (!mmPathExists(candidate)) return false;
+            loadBankAndPatch(mmResolveOpenPath(candidate), startupPatch);
             return bankLoader.isLoaded();
         };
 
+        if (tryLoadFactoryPath(mmBundledPluginPath("def/Default.bnk"))) {
+            return true;
+        }
+
         std::vector<std::string> candidates;
-        for (const std::string& volume : mmVolumeSearchOrder()) {
+        std::vector<std::string> volumes = mmVolumeSearchOrder();
+        if (!volumes.empty()) {
+            const std::string preferredVolume = volumes.front();
+            mmAppendUniqueString(candidates, preferredVolume + "minimalith/Default.bnk");
+            mmAppendUniqueString(candidates, preferredVolume + "MorphWorx/Default.bnk");
+            volumes.erase(volumes.begin());
+        }
+        for (const std::string& volume : volumes) {
             mmAppendUniqueString(candidates, volume + "minimalith/Default.bnk");
             mmAppendUniqueString(candidates, volume + "MorphWorx/Default.bnk");
         }
         for (const std::string& candidate : candidates) {
             if (tryLoadFactoryPath(candidate)) return true;
         }
-        return tryLoadFactoryPath(asset::plugin(pluginInstance, "def/Default.bnk"));
+        return false;
 #else
         loadBankAndPatch(asset::plugin(pluginInstance, "def/Default.bnk"), startupPatch);
         return bankLoader.isLoaded();
@@ -850,8 +886,10 @@ struct Minimalith : Module {
     #ifdef METAMODULE
     void loadMetaModuleUserWaveforms(const std::string& path) {
         auto tryDir = [&](const std::string& dirPath) {
+            // Packaged MetaModule plugin paths may resolve to valid readable roots
+            // even when the host filesystem API does not report them as directories.
             if (!dirPath.empty()) {
-                pfm::loadUserWaveformsFromDir(dirPath);
+                pfm::loadUserWaveformsFromDir(mmResolveOpenPath(dirPath));
             }
         };
 
@@ -878,15 +916,10 @@ struct Minimalith : Module {
             preferredVolume = mmNormalizeVolumeRoot(std::string(MetaModule::Patch::get_volume()));
         }
 
-        std::vector<std::string> searchVolumes;
-        mmAppendUniqueString(searchVolumes, preferredVolume);
-        for (const std::string& volume : mmVolumeSearchOrder()) {
-            mmAppendUniqueString(searchVolumes, volume);
-        }
-        for (const std::string& volume : searchVolumes) {
-            tryVolume(volume);
-        }
-        tryDir(asset::plugin(pluginInstance, "userwaveforms"));
+        // Keep startup fast on MetaModule: check only the relevant local volume
+        // plus the bundled plugin defaults, rather than scanning every device.
+        tryVolume(preferredVolume);
+        tryDir(mmBundledPluginPath("userwaveforms"));
     }
     #endif
 

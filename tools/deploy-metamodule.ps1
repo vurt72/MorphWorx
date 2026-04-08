@@ -59,6 +59,21 @@ function Assert-DirExists([string]$Path, [string]$Label) {
 }
 
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
+$pluginManifestPath = Join-Path $repoRoot 'plugin.json'
+Assert-FileExists $pluginManifestPath 'Plugin manifest'
+
+$pluginVersion = $null
+try {
+  $pluginManifest = Get-Content -LiteralPath $pluginManifestPath -Raw | ConvertFrom-Json
+  $pluginVersion = [string]$pluginManifest.version
+}
+catch {
+  throw "Failed to read plugin version from ${pluginManifestPath}: $($_.Exception.Message)"
+}
+
+if (-not $pluginVersion -or [string]::IsNullOrWhiteSpace($pluginVersion)) {
+  throw "Plugin version missing in $pluginManifestPath"
+}
 
 # Refuse to deploy if there is no MetaModule plugin output directory yet.
 $mmOutDir = Join-Path $repoRoot 'metamodule\metamodule-plugins'
@@ -133,10 +148,24 @@ Write-Host "Deploying MetaModule plugin..." -ForegroundColor Cyan
 Write-Host "  From: $SourceFile"
 Write-Host "  To:   $DestDir"
 
-Copy-Item -LiteralPath $SourceFile -Destination $DestDir -Force
+$deployedFileName = "$PluginSlug-v$pluginVersion.mmplugin"
+$deployedPath = Join-Path $DestDir $deployedFileName
+Copy-Item -LiteralPath $SourceFile -Destination $deployedPath -Force
 
-$deployedPath = Join-Path $DestDir ([System.IO.Path]::GetFileName($SourceFile))
 Assert-FileExists $deployedPath 'Deployed mmplugin file'
+
+$legacyPluginNames = @(
+  "$PluginSlug.mmplugin",
+  "$PluginSlug-$pluginVersion.mmplugin"
+) | Where-Object { $_ -and $_ -ne $deployedFileName } | Select-Object -Unique
+
+foreach ($legacyName in $legacyPluginNames) {
+  $legacyPath = Join-Path $DestDir $legacyName
+  if (Test-Path -LiteralPath $legacyPath -PathType Leaf) {
+    Remove-Item -LiteralPath $legacyPath -Force
+    Write-Host "  Removed legacy plugin file: $legacyName"
+  }
+}
 
 # Copy shared resources (user waveforms, default wavetables) onto the SD card.
 $sdRoot = Split-Path -Qualifier $DestDir  # e.g. F:

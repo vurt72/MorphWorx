@@ -236,7 +236,7 @@ Write-Host "Release URL: $($release.html_url)" -ForegroundColor Green
 
 if (-not $SkipAssetUpload) {
     Upload-ReleaseAsset $release $headers $rackAssetPath ([System.IO.Path]::GetFileName($rackAssetPath))
-    Upload-ReleaseAsset $release $headers $metaModuleAssetPath ("MorphWorx-$version.mmplugin")
+    Upload-ReleaseAsset $release $headers $metaModuleAssetPath ("MorphWorx-v$version.mmplugin")
 }
 
 Write-Host "GitHub release publish complete." -ForegroundColor Green
