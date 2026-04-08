@@ -1,7 +1,7 @@
 {
   "slug": "MorphWorx",
   "name": "MorphWorx",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "license": "GPL-3.0-or-later",
   "brand": "MorphWorx",
   "description": "Generative drum sequencers, experimental synth voices, and FM percussion for VCV Rack and MetaModule.",
@@ -9,7 +9,7 @@
   "authorEmail": "vurt72@gmail.com",
   "authorUrl": "https://github.com/vurt72",
   "pluginUrl": "https://github.com/vurt72/MorphWorx",
-  "manualUrl": "https://github.com/vurt72/MorphWorx/blob/main/README.md",
+  "manualUrl": "https://github.com/vurt72/MorphWorx/blob/main/docs/README.md",
   "sourceUrl": "https://github.com/vurt72/MorphWorx",
   "donateUrl": "",
   "changelogUrl": "https://github.com/vurt72/MorphWorx/releases",
@@ -56,7 +56,7 @@
     {
       "slug": "Amenolith",
       "name": "Amenolith",
-      "description": "Five-voice drum sampler with layered kits, roll behavior, and individual outputs",
+      "description": "Six-instrument layered drum sampler with 10 kits, 3-layer dynamics, and multi-out plus stereo mix routing",
       "tags": [
         "Drum",
         "Sampler"
@@ -83,8 +83,8 @@
     },
     {
       "slug": "Ferroklast",
-      "name": "FERROKLAST",
-      "description": "Six-voice FM percussion synth for kicks, snares, metallic hats, and unstable drums",
+      "name": "FerroKlast",
+      "description": "Eight-lane hybrid FM percussion synth for kick, dual snares, hats, ride, clap, and rim",
       "tags": [
         "Drum",
         "Noise",
@@ -93,8 +93,8 @@
     },
     {
       "slug": "FerroklastMM",
-      "name": "FERROKLAST MM",
-      "description": "Streamlined MetaModule edition of FERROKLAST with a reduced voice set",
+      "name": "FerroKlast MM",
+      "description": "Streamlined MetaModule edition of FerroKlast with a reduced voice set",
       "tags": [
         "Drum",
         "Noise",
