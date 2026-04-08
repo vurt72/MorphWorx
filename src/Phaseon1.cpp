@@ -832,26 +832,9 @@ static phaseon::Wavetable downsampleWavetableSmall(const phaseon::Wavetable& src
 		}
 	}
 
-	// Build 2 mip levels (128 and 64 samples) via 2-tap box-filter decimation.
-	// Used by bandlimited wavetable playback at elevated operator pitches.
-	{
-		constexpr int kMipLevels = 2;
-		dst.mipData.resize(kMipLevels);
-		int prevSize = kDstSize;
-		for (int level = 0; level < kMipLevels; ++level) {
-			int nextSize = prevSize / 2;
-			const std::vector<float>& prevVec = (level == 0) ? dst.data : dst.mipData[level - 1];
-			dst.mipData[level].resize((size_t)nextSize * (size_t)dst.frameCount);
-			for (int f = 0; f < dst.frameCount; ++f) {
-				const float* src = prevVec.data() + (size_t)f * (size_t)prevSize;
-				float* out = dst.mipData[level].data() + (size_t)f * (size_t)nextSize;
-				for (int s = 0; s < nextSize; ++s) {
-					out[s] = (src[s * 2] + src[s * 2 + 1]) * 0.5f;
-				}
-			}
-			prevSize = nextSize;
-		}
-	}
+	// Keep the Phaseon1 wavetable in a single-resolution form.
+	// The older build that matched the intended preset tone did not generate mipmaps.
+	dst.mipData.clear();
 	return dst;
 }
 
@@ -1049,6 +1032,10 @@ struct Phaseon1 : Module {
 	float lastPreVolR = 0.f;
 	int gateEdgeXfadeRemain = 0;
 	int gateEdgeXfadeTotal = 0;
+	float lastVoct = 0.f;
+	float heldGateAnchorVoct = 0.f;
+	bool heldPitchChangePending = false;
+	int heldPitchStableSamples = 0;
 
 	bool lastGate = false;
 	bool lastPresetSave = false;
@@ -1199,6 +1186,55 @@ struct Phaseon1 : Module {
 		char buf[32];
 		snprintf(buf, sizeof(buf), "Init %02d", idx + 1);
 		return buf;
+	}
+
+	bool isPresetApplyGateHigh() {
+#ifdef METAMODULE
+		if (!inputs[GATE_INPUT].isConnected()) {
+			return true;
+		}
+#endif
+		return inputs[GATE_INPUT].getVoltage() > 1.0f;
+	}
+
+	void resetHeldPitchTracking(float voct = 0.f) {
+		lastVoct = voct;
+		heldGateAnchorVoct = voct;
+		heldPitchChangePending = false;
+		heldPitchStableSamples = 0;
+	}
+
+	void armGateEdgeXfade(float sampleRate) {
+		gateEdgeFromL = lastPreVolL;
+		gateEdgeFromR = lastPreVolR;
+		gateEdgeXfadeTotal = (int)(sampleRate * 0.00025f);
+		if (gateEdgeXfadeTotal < 2) gateEdgeXfadeTotal = 2;
+		if (gateEdgeXfadeTotal > 32) gateEdgeXfadeTotal = 32;
+		gateEdgeXfadeRemain = gateEdgeXfadeTotal;
+	}
+
+	float currentVoctInputValue() {
+		if (!inputs[VOCT_INPUT].isConnected()) {
+			return 0.f;
+		}
+		float voct = inputs[VOCT_INPUT].getVoltage();
+		if (voct < -4.f) voct = -4.f;
+		if (voct > 4.f) voct = 4.f;
+		return voct;
+	}
+
+	void warmPresetSwitchState() {
+		bool gateHigh = isPresetApplyGateHigh();
+		fundamentalHz = 261.63f * fastExp2Approx(currentVoctInputValue());
+		ampEnv.setGate(gateHigh);
+		ampEnv.level = gateHigh ? 1.0f : 0.0f;
+		frac = 0.f;
+		for (int flush = 0; flush < 3; ++flush) {
+			renderInternalBlock();
+		}
+		// Force the next host-rate process() pass to resync edge handling from live inputs.
+		lastGate = false;
+		resetHeldPitchTracking(currentVoctInputValue());
 	}
 
 	// Shared volume normaliser (MetaModule only).
@@ -1449,6 +1485,7 @@ struct Phaseon1 : Module {
 		lastPreVolL = lastPreVolR = 0.f;
 		gateEdgeXfadeRemain = 0;
 		gateEdgeXfadeTotal = 0;
+		resetHeldPitchTracking();
 		blockL[0] = carryL;
 		blockR[0] = carryR;
 		for (int i = 1; i <= kBlockSize; ++i) {
@@ -1583,8 +1620,7 @@ struct Phaseon1 : Module {
 			params[RANDOMIZE_BUTTON_PARAM].setValue(0.f);
 			params[PRESET_INDEX_PARAM].setValue((float)(idx + 1));
 			resetDspStateOnly();
-			ampEnv.level = 1.0f;
-			invalidateRenderedBlock();
+			warmPresetSwitchState();
 			pendingPresetSwitchMute = true;
 			char buf[32];
 			snprintf(buf, sizeof(buf), "Empty %02d", idx + 1);
@@ -1623,15 +1659,7 @@ struct Phaseon1 : Module {
 
 		// Prevent one unstable preset from latching DSP into silent/NaN state.
 		resetDspStateOnly();
-		// Skip the attack ramp on preset changes so the new preset is heard immediately.
-		// Without this, a preset with a long attack (up to 0.25 s time-constant, ~1–3 s
-		// to fully open) sounds like the old preset is still audible because the new one
-		// hasn't attacked yet.  Normal note-triggered attacks (via gate rising edge) still
-		// start from 0 as intended.
-		ampEnv.level = 1.0f;
-		// Invalidate the cached host-rate interpolation block and let it rebuild lazily
-		// after the short preset-switch mute window instead of rendering three blocks now.
-		invalidateRenderedBlock();
+		warmPresetSwitchState();
 		pendingPresetSwitchMute = true;
 	}
 
@@ -3275,27 +3303,57 @@ struct Phaseon1 : Module {
 			if (voct > 4.f) voct = 4.f;
 		}
 
+		bool heldPitchRetrigger = false;
+		if (gate && lastGate) {
+			const float noteThresholdVolts = 0.045f;
+			const float stableDeltaVolts = 0.0015f;
+			const int stableSamplesRequired = 8;
+			float perSampleDelta = std::fabs(voct - lastVoct);
+			if (!heldPitchChangePending) {
+				if (std::fabs(voct - heldGateAnchorVoct) >= noteThresholdVolts) {
+					heldPitchChangePending = true;
+					heldPitchStableSamples = (perSampleDelta <= stableDeltaVolts) ? 1 : 0;
+				}
+			}
+			else {
+				if (perSampleDelta <= stableDeltaVolts) {
+					heldPitchStableSamples++;
+				}
+				else {
+					heldPitchStableSamples = 0;
+				}
+				if (heldPitchStableSamples >= stableSamplesRequired) {
+					heldPitchRetrigger = true;
+					heldGateAnchorVoct = voct;
+					heldPitchChangePending = false;
+					heldPitchStableSamples = 0;
+				}
+			}
+		}
+		else {
+			resetHeldPitchTracking(voct);
+		}
+
 		if (gate && !lastGate) {
 			fundamentalHz = 261.63f * fastExp2Approx(voct);
 			ampEnv.setGate(true);
-			gateEdgeFromL = lastPreVolL;
-			gateEdgeFromR = lastPreVolR;
-			gateEdgeXfadeTotal = (int)(args.sampleRate * 0.00025f); // ~0.25 ms
-			if (gateEdgeXfadeTotal < 2) gateEdgeXfadeTotal = 2;
-			if (gateEdgeXfadeTotal > 32) gateEdgeXfadeTotal = 32;
-			gateEdgeXfadeRemain = gateEdgeXfadeTotal;
+			armGateEdgeXfade(args.sampleRate);
+			resetHeldPitchTracking(voct);
 		} else if (!gate && lastGate) {
 			ampEnv.setGate(false);
-			gateEdgeFromL = lastPreVolL;
-			gateEdgeFromR = lastPreVolR;
-			gateEdgeXfadeTotal = (int)(args.sampleRate * 0.00025f); // ~0.25 ms
-			if (gateEdgeXfadeTotal < 2) gateEdgeXfadeTotal = 2;
-			if (gateEdgeXfadeTotal > 32) gateEdgeXfadeTotal = 32;
-			gateEdgeXfadeRemain = gateEdgeXfadeTotal;
+			armGateEdgeXfade(args.sampleRate);
+			resetHeldPitchTracking(voct);
 		} else if (gate) {
 			fundamentalHz = 261.63f * fastExp2Approx(voct);
+			if (heldPitchRetrigger) {
+				ampEnv.level = 0.f;
+				ampEnv.setGate(true);
+				internalLfo.reset();
+				armGateEdgeXfade(args.sampleRate);
+			}
 		}
 		lastGate = gate;
+		lastVoct = voct;
 		lights[GATE_LIGHT].setBrightness(gate ? 1.f : 0.f);
 
 		float hostRate = std::max(1.f, args.sampleRate);
