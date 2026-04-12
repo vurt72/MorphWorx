@@ -6,11 +6,17 @@ VCV Rack 2 and 4ms MetaModule plugin.
 
 ## Available Manuals
 
+- **[Aetherion Manual](docs/aetherion-manual.md)**
 - **[Amenolith Manual](docs/amenolith-manual.md)**
 - **[Phaseon1 Manual](docs/phaseon1-manual.md)**
 - **[FerroKlast Manual](docs/ferroklast-manual.md)**
 
 ## Modules
+
+### Aetherion
+Stereo hall reverb with lo-fi tape degradation in the feedback loop. 8-line FDN with Hadamard mixing, shimmer pitch shifting (octave + fifth), freeze, swell envelope follower, and three character modes (Clean, Warm, Degrade).
+
+📖 **[Full Manual](docs/aetherion-manual.md)**
 
 ### Trigonomicon
 Generative drum trigger pattern generator. IDM, breakcore, amen-break, and drill-inspired rhythmic structures. Probability-weighted pattern mutation and clock-synced CV outputs.
@@ -49,6 +55,7 @@ MetaModule-focused FerroKlast variant with a reduced voice set and trimmed featu
 
 The official MorphWorx release tracks these Rack modules:
 
+- Aetherion
 - Amenolith
 - FerroKlast
 - FerroKlast MM
