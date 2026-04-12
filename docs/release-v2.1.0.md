@@ -19,8 +19,8 @@ VCV Rack 2 and 4ms MetaModule full release.
 - Minimalith
 - Amenolith
 - Xenostasis
-- FERROKLAST
-- FERROKLAST MM
+- FerroKlast
+- FerroKlast MM
 
 ## Release Assets
 

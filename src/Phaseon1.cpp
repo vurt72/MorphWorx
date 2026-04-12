@@ -51,6 +51,7 @@
 #include "phaseon/PhaseonWavetable.hpp"
 
 #include <atomic>
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -1058,6 +1059,10 @@ struct Phaseon1 : Module {
 	std::string presetName = "Init";
 	bool bankLoaded = false;
 	std::string bankFilePath;
+	bool jsonBankRestored = false;   // set by dataFromJson() so onAdd() skips defaults
+	#ifdef METAMODULE
+	bool mmDefaultsStaged = false;
+	#endif
 	#ifdef METAMODULE
 	char mmPresetName[32] = "Init";
 	#endif
@@ -1295,6 +1300,45 @@ struct Phaseon1 : Module {
 	static std::string bundledMetaModulePath(const char* relativePath) {
 		return resolveMetaModuleOpenPath(asset::plugin(pluginInstance, relativePath));
 	}
+
+	static bool copyFileBytes(const std::string& srcPath, const std::string& dstPath) {
+		if (srcPath.empty() || dstPath.empty()) return false;
+		std::string dir = system::getDirectory(dstPath);
+		if (!dir.empty()) system::createDirectories(dir);
+		std::FILE* in = std::fopen(srcPath.c_str(), "rb");
+		if (!in) return false;
+		std::FILE* out = std::fopen(dstPath.c_str(), "wb");
+		if (!out) {
+			std::fclose(in);
+			return false;
+		}
+		bool ok = true;
+		char buf[4096];
+		while (true) {
+			size_t n = std::fread(buf, 1, sizeof(buf), in);
+			if (n > 0) {
+				if (std::fwrite(buf, 1, n, out) != n) {
+					ok = false;
+					break;
+				}
+			}
+			if (n < sizeof(buf)) {
+				if (std::ferror(in)) ok = false;
+				break;
+			}
+		}
+		std::fclose(in);
+		std::fclose(out);
+		return ok;
+	}
+
+	static bool copyBundledIfMissing(const char* bundledRelative, const std::string& dstPath) {
+		if (metaModulePathExists(dstPath)) return true;
+		// Use asset::plugin() directly — the MetaModule runtime maps it
+		// to the mmplugin archive contents.  Do NOT resolve/absolutify.
+		std::string srcPath = asset::plugin(pluginInstance, bundledRelative);
+		return copyFileBytes(srcPath, dstPath);
+	}
 #endif
 
 	std::string bankPath() const {
@@ -1317,6 +1361,21 @@ struct Phaseon1 : Module {
 
 	std::string defaultWtBrowserDir() const {
 		return preferredPatchVolume() + "phaseon1/";
+	}
+
+	void stageBundledDefaultsToPatchVolume() {
+		if (mmDefaultsStaged) return;
+		mmDefaultsStaged = true;
+
+		const std::string destDir = preferredPatchVolume() + "phaseon1/";
+		const std::string destBank = destDir + "Phbank.bnk";
+		const std::string destWt = destDir + "phaseon1.wav";
+
+		bool bankOk = copyBundledIfMissing("userwaveforms/Phbank.bnk", destBank);
+		bool wtOk = copyBundledIfMissing("userwaveforms/phaseon1.wav", destWt);
+		if (!bankOk || !wtOk) {
+			MetaModule::Gui::notify_user("Phaseon1: default files copy failed", 3000);
+		}
 	}
 #endif
 
@@ -1730,36 +1789,26 @@ struct Phaseon1 : Module {
 	}
 
 	bool bankLoad() {
-		std::string primaryPath = bankPath();
 	#ifdef METAMODULE
-		if (metaModulePathExists(primaryPath) && bankLoadFromPath(primaryPath)) {
-			return true;
+		if (!bankFilePath.empty() && MetaModule::Filesystem::is_local_path(bankFilePath)) {
+			if (metaModulePathExists(bankFilePath) && bankLoadFromPath(bankFilePath)) {
+				return true;
+			}
 		}
 		{
-			std::string bundledPath = bundledMetaModulePath("userwaveforms/Phbank.bnk");
-			if (bundledPath != primaryPath && metaModulePathExists(bundledPath) && bankLoadFromPath(bundledPath)) {
+			// Use asset::plugin() directly — the MetaModule runtime maps it
+			// to the mmplugin archive.  Do NOT resolve/absolutify.
+			std::string bundledPath = asset::plugin(pluginInstance, "userwaveforms/Phbank.bnk");
+			if (bankLoadFromPath(bundledPath)) {
 				return true;
 			}
 		}
-
-		std::vector<std::string> candidatePaths;
-		std::vector<std::string> volumes = metaModuleVolumeSearchOrder();
-		if (!volumes.empty()) {
-			volumes.erase(volumes.begin());
-		}
-		for (const std::string& volume : volumes) {
-			appendUniqueString(candidatePaths, volume + "phaseon1/Phbank.bnk");
-			appendUniqueString(candidatePaths, volume + "phaseon1/phbank.bnk");
-			appendUniqueString(candidatePaths, volume + "MorphWorx/phbank.bnk");
-			appendUniqueString(candidatePaths, volume + "morphworx/phbank.bnk");
-		}
-		for (const std::string& candidate : candidatePaths) {
-			if (candidate == primaryPath || !metaModulePathExists(candidate)) continue;
-			if (bankLoadFromPath(candidate)) {
-				return true;
-			}
+		std::string defaultPath = preferredPatchVolume() + "phaseon1/Phbank.bnk";
+		if (metaModulePathExists(defaultPath) && bankLoadFromPath(defaultPath)) {
+			return true;
 		}
 	#else
+		std::string primaryPath = bankPath();
 		if (bankLoadFromPath(primaryPath)) {
 			return true;
 		}
@@ -1823,6 +1872,85 @@ struct Phaseon1 : Module {
 
 	bool bankSave() {
 		return bankSaveToPath(bankPath());
+	}
+
+	// ── Patch-level JSON serialization ─────────────────────────────────
+	// Embeds the full preset bank + active slot into the .vcv / MetaModule
+	// patch JSON so presets transfer between VCV Rack and MetaModule.
+
+	json_t* dataToJson() override {
+		json_t* root = json_object();
+
+		// Serialize the full bank inline (same schema as .bnk v2).
+		json_object_set_new(root, "bankVersion", json_integer(2));
+		json_object_set_new(root, "currentPreset", json_integer(currentPreset));
+
+		json_t* slotsJ = json_array();
+		for (int i = 0; i < kPresetSlots; ++i) {
+			const PresetSlot& s = bank[i];
+			if (!s.used) {
+				json_array_append_new(slotsJ, json_null());
+				continue;
+			}
+			json_t* slotJ = json_object();
+			json_object_set_new(slotJ, "name", json_string(s.name.c_str()));
+			json_t* paramsJ = json_array();
+			for (int p = 0; p < PARAMS_LEN; ++p) {
+				float v = s.params[p];
+				if (p == PRESET_SAVE_PARAM || p == RANDOMIZE_BUTTON_PARAM) v = 0.f;
+				json_array_append_new(paramsJ, json_real(v));
+			}
+			json_object_set_new(slotJ, "params", paramsJ);
+			json_array_append_new(slotsJ, slotJ);
+		}
+		json_object_set_new(root, "bank", slotsJ);
+		return root;
+	}
+
+	void dataFromJson(json_t* root) override {
+		if (!root) return;
+
+		json_t* verJ = json_object_get(root, "bankVersion");
+		json_t* curJ  = json_object_get(root, "currentPreset");
+		json_t* slotsJ = json_object_get(root, "bank");
+		if (!slotsJ || !json_is_array(slotsJ)) return;
+
+		const int bankVer = (verJ && json_is_integer(verJ)) ? (int)json_integer_value(verJ) : 2;
+
+		bankInitDefault();
+		int n = (int)json_array_size(slotsJ);
+		for (int i = 0; i < kPresetSlots && i < n; ++i) {
+			json_t* slotJ = json_array_get(slotsJ, i);
+			if (!slotJ || json_is_null(slotJ)) continue;
+			PresetSlot& s = bank[i];
+			fillFactoryDefaultSlot(s, defaultSlotName(i));
+			json_t* nameJ = json_object_get(slotJ, "name");
+			if (nameJ && json_is_string(nameJ)) {
+				s.name = json_string_value(nameJ);
+			}
+			json_t* paramsJ = json_object_get(slotJ, "params");
+			if (paramsJ && json_is_array(paramsJ)) {
+				int pn = (int)json_array_size(paramsJ);
+				for (int p = 0; p < pn; ++p) {
+					json_t* vJ = json_array_get(paramsJ, p);
+					if (!vJ || !json_is_number(vJ)) continue;
+					float v = (float)json_number_value(vJ);
+					int dstParam = p;
+					if (bankVer < 2) {
+						dstParam = migrateVersion1ParamIndex(p);
+					}
+					if (dstParam < 0 || dstParam >= PARAMS_LEN) continue;
+					s.params[dstParam] = sanitizeParamValue(dstParam, v);
+				}
+			}
+		}
+
+		bankLoaded = true;
+		jsonBankRestored = true;
+
+		if (curJ && json_is_integer(curJ)) {
+			currentPreset = clamp((int)json_integer_value(curJ), 0, kPresetSlots - 1);
+		}
 	}
 
 	void bankEnsureLoaded() {
@@ -1962,63 +2090,57 @@ struct Phaseon1 : Module {
 		Module::onAdd();
 
 #ifdef METAMODULE
-		// MetaModule: aggressively force a known-good default patch on add.
-		// We ignore any imported parameter state so Phaseon1 always starts
-		// from a sound-producing configuration on MetaModule.
-		params[DENSITY_PARAM].setValue(0.25f);
-		params[TIMBRE_PARAM].setValue(0.5f);
-		params[EDGE_PARAM].setValue(0.25f);
-		params[ALGO_PARAM].setValue(0.f);
-		params[CHAR_PARAM].setValue(0.f);
-		params[WAVE_PARAM].setValue(0.f);
-		params[FORMANT_PARAM].setValue(0.f);
-		params[BITCRUSH_PARAM].setValue(0.f);
-		params[MOTION_PARAM].setValue(0.26f);
-		params[MORPH_PARAM].setValue(0.52f);
-		params[COMPLEX_PARAM].setValue(0.f);
+		// If dataFromJson() already restored a bank from the patch,
+		// skip the hardcoded defaults — use the imported state instead.
+		if (!jsonBankRestored) {
+			// MetaModule cold start: force a known-good default so the
+			// module is immediately audible even without a .bnk file.
+			params[DENSITY_PARAM].setValue(0.25f);
+			params[TIMBRE_PARAM].setValue(0.5f);
+			params[EDGE_PARAM].setValue(0.25f);
+			params[ALGO_PARAM].setValue(0.f);
+			params[CHAR_PARAM].setValue(0.f);
+			params[WAVE_PARAM].setValue(0.f);
+			params[FORMANT_PARAM].setValue(0.f);
+			params[BITCRUSH_PARAM].setValue(0.f);
+			params[MOTION_PARAM].setValue(0.26f);
+			params[MORPH_PARAM].setValue(0.52f);
+			params[COMPLEX_PARAM].setValue(0.f);
 
-		params[EDIT_OP_PARAM].setValue(1.f);
-		params[OP_FREQ_PARAM].setValue(0.f);
-		params[OP_LEVEL_PARAM].setValue(1.f);
-		params[ATTACK_PARAM].setValue(0.12f);
-		params[DECAY_PARAM].setValue(0.35f);
-		params[WARP_PARAM].setValue(0.0f);
-		params[FM_ENV_AMOUNT_PARAM].setValue(0.65f);
-		params[WARMTH_PARAM].setValue(0.45f);
-		params[SYNC_ENV_PARAM].setValue(0.40f);
-		params[LFO_SYNC_DIV_PARAM].setValue(4.f);
-		params[LFO_GRAVITY_PARAM].setValue(0.4f);
-		params[SYNC_DIV_MOD_TRIMPOT].setValue(0.f);
-		params[WT_FRAME_MOD_TRIMPOT].setValue(0.f);
-		params[VOWEL_MOD_TRIMPOT].setValue(0.f);
-		params[OP1_FB_MOD_TRIMPOT].setValue(0.f);
-		params[DECAY_MOD_TRIMPOT].setValue(0.f);
-		params[CUTOFF_MOD_TRIMPOT].setValue(0.f);
-		params[LFO_SYNC_DIV_PARAM].setValue(4.f);
-		params[LFO_GRAVITY_PARAM].setValue(0.4f);
-		params[SYNC_DIV_MOD_TRIMPOT].setValue(0.f);
-		params[WT_FRAME_MOD_TRIMPOT].setValue(0.f);
-		params[VOWEL_MOD_TRIMPOT].setValue(0.f);
-		params[OP1_FB_MOD_TRIMPOT].setValue(0.f);
-		params[DECAY_MOD_TRIMPOT].setValue(0.f);
-		params[CUTOFF_MOD_TRIMPOT].setValue(0.f);
-		params[VOLUME_PARAM].setValue(0.5f);
-		params[WT_SCROLL_MODE_PARAM].setValue(0.f);
-		params[WT_FORM_PARAM].setValue(0.f);
+			params[EDIT_OP_PARAM].setValue(1.f);
+			params[OP_FREQ_PARAM].setValue(0.f);
+			params[OP_LEVEL_PARAM].setValue(1.f);
+			params[ATTACK_PARAM].setValue(0.12f);
+			params[DECAY_PARAM].setValue(0.35f);
+			params[WARP_PARAM].setValue(0.0f);
+			params[FM_ENV_AMOUNT_PARAM].setValue(0.65f);
+			params[WARMTH_PARAM].setValue(0.45f);
+			params[SYNC_ENV_PARAM].setValue(0.40f);
+			params[LFO_SYNC_DIV_PARAM].setValue(4.f);
+			params[LFO_GRAVITY_PARAM].setValue(0.4f);
+			params[SYNC_DIV_MOD_TRIMPOT].setValue(0.f);
+			params[WT_FRAME_MOD_TRIMPOT].setValue(0.f);
+			params[VOWEL_MOD_TRIMPOT].setValue(0.f);
+			params[OP1_FB_MOD_TRIMPOT].setValue(0.f);
+			params[DECAY_MOD_TRIMPOT].setValue(0.f);
+			params[CUTOFF_MOD_TRIMPOT].setValue(0.f);
+			params[VOLUME_PARAM].setValue(0.5f);
+			params[WT_SCROLL_MODE_PARAM].setValue(0.f);
+			params[WT_FORM_PARAM].setValue(0.f);
 
-		// Hidden per-operator storage defaults (match constructor).
-		params[OP1_WAVE_STORE_PARAM].setValue(0.f);
-		params[OP2_WAVE_STORE_PARAM].setValue(0.f);
-		params[OP3_WAVE_STORE_PARAM].setValue(0.f);
-		params[OP4_WAVE_STORE_PARAM].setValue(0.f);
-		params[OP1_FREQ_STORE_PARAM].setValue(0.f);
-		params[OP2_FREQ_STORE_PARAM].setValue(0.f);
-		params[OP3_FREQ_STORE_PARAM].setValue(0.f);
-		params[OP4_FREQ_STORE_PARAM].setValue(0.f);
-		params[OP1_LEVEL_STORE_PARAM].setValue(1.f);
-		params[OP2_LEVEL_STORE_PARAM].setValue(1.f);
-		params[OP3_LEVEL_STORE_PARAM].setValue(1.f);
-		params[OP4_LEVEL_STORE_PARAM].setValue(1.f);
+			params[OP1_WAVE_STORE_PARAM].setValue(0.f);
+			params[OP2_WAVE_STORE_PARAM].setValue(0.f);
+			params[OP3_WAVE_STORE_PARAM].setValue(0.f);
+			params[OP4_WAVE_STORE_PARAM].setValue(0.f);
+			params[OP1_FREQ_STORE_PARAM].setValue(0.f);
+			params[OP2_FREQ_STORE_PARAM].setValue(0.f);
+			params[OP3_FREQ_STORE_PARAM].setValue(0.f);
+			params[OP4_FREQ_STORE_PARAM].setValue(0.f);
+			params[OP1_LEVEL_STORE_PARAM].setValue(1.f);
+			params[OP2_LEVEL_STORE_PARAM].setValue(1.f);
+			params[OP3_LEVEL_STORE_PARAM].setValue(1.f);
+			params[OP4_LEVEL_STORE_PARAM].setValue(1.f);
+		}
 #endif
 
 		cachedEditOp = getEditOpIndex();
@@ -2026,10 +2148,16 @@ struct Phaseon1 : Module {
 		onReset();
 		bankEnsureLoaded();
 #ifdef METAMODULE
-		// Deterministic startup on MetaModule: always begin browsing at slot 1.
-		currentPreset = 0;
-		params[PRESET_INDEX_PARAM].setValue(1.f);
-		bankApplySlot(currentPreset);
+		// Apply the restored or default preset.
+		if (jsonBankRestored) {
+			// Patch had embedded bank data — restore exact preset.
+			bankApplySlot(currentPreset);
+		} else {
+			// Cold start — begin at slot 1.
+			currentPreset = 0;
+			params[PRESET_INDEX_PARAM].setValue(1.f);
+			bankApplySlot(currentPreset);
+		}
 		presetStartupLockSamples = 36000;
 #else
 		// In VCV Rack, respect restored preset selection from the host/patch.
@@ -2053,23 +2181,12 @@ struct Phaseon1 : Module {
 		if (!hasWt.load(std::memory_order_acquire)) {
 			std::string err; 
 #ifdef METAMODULE
-			// Prefer a same-volume override, then the bundled factory wavetable,
-			// then any other local volumes as a legacy fallback.
-			std::vector<std::string> candidateWtPaths;
-			appendUniqueString(candidateWtPaths, defaultWtPath());
-			appendUniqueString(candidateWtPaths, bundledMetaModulePath("userwaveforms/phaseon1.wav"));
-			std::vector<std::string> volumes = metaModuleVolumeSearchOrder();
-			if (!volumes.empty()) {
-				volumes.erase(volumes.begin());
-			}
-			for (const std::string& volume : volumes) {
-				appendUniqueString(candidateWtPaths, volume + "phaseon1/phaseon1.wav");
-			}
-			for (const std::string& candidate : candidateWtPaths) {
-				if (!metaModulePathExists(candidate)) continue;
-				if (loadWavetableFile(candidate, &err, false)) {
-					break;
-				}
+			// Use asset::plugin() directly — the MetaModule runtime maps it
+			// to the mmplugin archive.  Do NOT resolve/absolutify.
+			std::string bundledPath = asset::plugin(pluginInstance, "userwaveforms/phaseon1.wav");
+			if (!loadWavetableFile(bundledPath, &err, false)) {
+				std::string fallbackPath = defaultWtPath();
+				loadWavetableFile(fallbackPath, &err, false);
 			}
 #else
 			// On Rack, load from the plugin-bundled userwaveforms folder so it ships inside the .vcvplugin.

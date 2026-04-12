@@ -65,6 +65,7 @@ target_sources(MorphWorx PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/../src/Ferroklast.cpp
     ${CMAKE_CURRENT_LIST_DIR}/../src/SlideWyrm.cpp
     ${CMAKE_CURRENT_LIST_DIR}/../src/PhaseWarpedDrums.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../src/Aetherion.cpp
     # Phaseon1: performance-first Phaseon variant for MetaModule
     ${CMAKE_CURRENT_LIST_DIR}/../src/Phaseon1.cpp
     ${CMAKE_CURRENT_LIST_DIR}/../src/phaseon/PhaseonOperator.cpp

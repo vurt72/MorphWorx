@@ -1,7 +1,7 @@
 {
   "slug": "MorphWorx",
   "name": "MorphWorx",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "license": "GPL-3.0-or-later",
   "brand": "MorphWorx",
   "description": "Generative drum sequencers, experimental synth voices, and FM percussion for VCV Rack and MetaModule.",
@@ -99,6 +99,16 @@
         "Drum",
         "Noise",
         "Digital"
+      ]
+    },
+    {
+      "slug": "Aetherion",
+      "name": "Aetherion",
+      "description": "Stereo hall reverb with lo-fi tape degradation in the feedback loop",
+      "tags": [
+        "Reverb",
+        "Effect",
+        "Delay"
       ]
     }
   ]

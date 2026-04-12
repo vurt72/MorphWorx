@@ -7,8 +7,8 @@ Scope: classify repo files and folders into four cleanup buckets without deletin
 Official current Rack module set:
 
 - Amenolith
-- Ferroklast
-- FerroklastMM
+- FerroKlast
+- FerroKlast MM
 - Minimalith
 - Phaseon1
 - Septagon
@@ -19,7 +19,7 @@ Official current Rack module set:
 Official current MetaModule set:
 
 - Amenolith
-- FerroklastMM
+- FerroKlast MM
 - Minimalith
 - Phaseon1
 - Septagon

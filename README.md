@@ -2,6 +2,14 @@
 
 VCV Rack 2 and 4ms MetaModule plugin.
 
+📚 **[Documentation Index](docs/README.md)**
+
+## Available Manuals
+
+- **[Amenolith Manual](docs/amenolith-manual.md)**
+- **[Phaseon1 Manual](docs/phaseon1-manual.md)**
+- **[FerroKlast Manual](docs/ferroklast-manual.md)**
+
 ## Modules
 
 ### Trigonomicon
@@ -17,7 +25,9 @@ Polyrhythmic drum pattern generator in 7/4. Phase-space warping, accent layers, 
 Compact PreenFM2-based FM synth voice with bank loading and CV modulation.
 
 ### Amenolith
-Five-instrument multisample drum player with kits, velocity layers, roll behavior, tune/length trim, and individual outputs.
+Six-instrument layered drum sampler with 10 kits, 3-layer velocity/accent response, per-row round robin, and individual plus stereo mix outputs.
+
+📖 **[Full Manual](docs/amenolith-manual.md)**
 
 ### Phaseon1
 4-operator phase modulation (PM/FM) synthesizer voice with user-loadable wavetable and formant shaper. Macro controls (TIMBRE, COLOR, DENSITY, MOTION) provide expressive performance shaping with extensive CV modulation. Factory preset bank included.
@@ -27,19 +37,21 @@ Five-instrument multisample drum player with kits, velocity layers, roll behavio
 ### Xenostasis
 Autonomous hybrid synthesis organism. Self-regulating spectral drone combining wavetable oscillation with organic bytebeat cross-modulation and an internal metabolic feedback system.
 
-### FERROKLAST
-Six-lane FM percussion synth for kicks, snares, metallic hats, and chaotic IDM percussion voices.
+### FerroKlast
+Eight-lane hybrid FM percussion synth for kick, dual snares, hats, ride, clap, and rim with dedicated wet reverb outputs and groove CV.
 
-### FERROKLAST MM
-MetaModule-focused FERROKLAST variant with a reduced voice set and trimmed feature surface.
+📖 **[Full Manual](docs/ferroklast-manual.md)**
+
+### FerroKlast MM
+MetaModule-focused FerroKlast variant with a reduced voice set and trimmed feature surface.
 
 ## Official Release Set
 
 The official MorphWorx release tracks these Rack modules:
 
 - Amenolith
-- FERROKLAST
-- FERROKLAST MM
+- FerroKlast
+- FerroKlast MM
 - Minimalith
 - Phaseon1
 - Septagon
@@ -47,7 +59,7 @@ The official MorphWorx release tracks these Rack modules:
 - Trigonomicon
 - Xenostasis
 
-The MetaModule build ships the same set except full FERROKLAST, which is replaced by the MetaModule-specific FERROKLAST MM.
+The MetaModule build ships the same set except full FerroKlast, which is replaced by the MetaModule-specific FerroKlast MM.
 
 ---
 

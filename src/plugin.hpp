@@ -24,6 +24,7 @@ extern Model* modelPhaseon1;
 extern Model* modelXenostasis;
 extern Model* modelFerroklast;
 extern Model* modelFerroklastMM;
+extern Model* modelAetherion;
 
 #ifndef METAMODULE
 struct MVXPort : app::PortWidget {
@@ -179,7 +180,7 @@ struct MVXKnob : app::Knob {
 			nvgRestore(args.vg);
 		}
 
-		Widget::draw(args);
+		Knob::draw(args);
 	}
 };
 
@@ -263,6 +264,14 @@ struct MVXport_s1_red : MVXPort {
 	}
 };
 
+// Standard input port (s1 style).
+struct MVXport_s1 : MVXPort {
+	MVXport_s1() {
+		imagePath = asset::plugin(pluginInstance, "res/ports/MVXport_s1.png");
+		imageHandle = -1;
+	}
+};
+
 #else
 using MVXPort         = componentlibrary::PJ301MPort;
 // MetaModule doesn't render custom PNG knobs; fall back to standard knob widgets.
@@ -274,4 +283,5 @@ using MVXKnob_wh      = componentlibrary::RoundSmallBlackKnob;
 using MVXport_silver      = componentlibrary::PJ301MPort;
 using MVXport_silver_red  = componentlibrary::PJ301MPort;
 using MVXport_s1_red      = componentlibrary::PJ301MPort;
+using MVXport_s1          = componentlibrary::PJ301MPort;
 #endif

@@ -17,6 +17,7 @@ void init(Plugin* p) {
 	p->addModel(modelAmenolith);
 	p->addModel(modelPhaseon1);
 	p->addModel(modelXenostasis);
+	p->addModel(modelAetherion);
 
 #ifndef METAMODULE
 	p->addModel(modelFerroklast);

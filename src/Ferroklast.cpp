@@ -3297,7 +3297,7 @@ struct FerroklastWidget : ModuleWidget {
 			addParam(createParamCentered<FKKnob_grey>(mm2px(Vec(topKnobXs[6], bottomKnobY)), module, Ferroklast::CHAOS_PARAM));
 			addParam(createParamCentered<FKKnob_grey>(mm2px(Vec(topKnobXs[7], bottomKnobY)), module, Ferroklast::FINAL_DRIVE_PARAM));
 
-		// FERROKLAST title removed to make room for reverb controls.
+		// FerroKlast title removed to make room for reverb controls.
 		// Reverb macro knobs — positions [7] and [8] of the unified grid.
 			const float xRvb1 = topKnobXs[8], xRvb2 = topKnobXs[9];
 		const float rightClusterLeft = 125.f * (25.4f / 75.f);

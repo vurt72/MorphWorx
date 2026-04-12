@@ -28,6 +28,9 @@ SOURCES += src/phaseon/PhaseonWavetable.cpp
 # Xenostasis (autonomous hybrid synthesis organism)
 SOURCES += src/Xenostasis.cpp
 
+# Aetherion (stereo hall reverb with lo-fi feedback)
+SOURCES += src/Aetherion.cpp
+
 # Minimalith (PreenFM2 engine port)
 SOURCES += src/Minimalith.cpp
 SOURCES += src/pfm/PfmEngine.cpp

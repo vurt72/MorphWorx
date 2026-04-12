@@ -35,8 +35,12 @@
             "name": "Xenostasis"
         },
         {
+            "slug": "Aetherion",
+            "name": "Aetherion"
+        },
+        {
             "slug": "FerroklastMM",
-            "name": "FERROKLAST MM"
+            "name": "FerroKlast MM"
         }
     ]
 }

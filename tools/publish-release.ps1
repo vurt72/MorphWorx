@@ -157,6 +157,7 @@ Assert-CleanTree -allowDirty:$AllowDirty
 Assert-FileExists $NotesFile 'Release notes file'
 
 $expectedRackModules = @(
+    'Aetherion',
     'Amenolith',
     'Ferroklast',
     'FerroklastMM',
@@ -168,6 +169,7 @@ $expectedRackModules = @(
     'Xenostasis'
 )
 $expectedMetaModules = @(
+    'Aetherion',
     'Amenolith',
     'FerroklastMM',
     'Minimalith',
