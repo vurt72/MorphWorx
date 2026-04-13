@@ -594,10 +594,10 @@ struct AetherionWidget : ModuleWidget {
         constexpr float kRow3 = 59.0f;    // LO DAMP / LO-FI
         constexpr float kRow4 = 76.0f;    // MIX / MODE
         constexpr float kCvRow   = 101.0f; // DCY CV / SZ CV / LFO CV
-        constexpr float kPortRow = 116.0f; // I/O ports
+        constexpr float kPortRow = 119.05f; // I/O ports (shifted down 9px)
 
         // Port label sits above port centre
-        constexpr float kPortLabelAbove = 5.5f;
+        constexpr float kPortLabelAbove = 5.84f;
 
         // ── Row 1: PREDELAY / SIZE ──
         addChild(aeLabel(Vec(kCol1, kRow1 - kLabelAbove), "PREDELAY", 7.5f, labelCol));
@@ -625,21 +625,15 @@ struct AetherionWidget : ModuleWidget {
 
         // ── Row 4: MIX / MODE ──
         addChild(aeLabel(Vec(kCol1, kRow4 - kLabelAbove), "MIX", 7.5f, labelCol));
-        addChild(aeLabel(Vec(kCol2, kRow4 - kLabelAbove - 1.f), "MODE", 7.5f, modeCol));
+        addChild(aeLabel(Vec(kCol2, kRow4 - kLabelAbove - 0.66f), "MODE", 7.5f, modeCol));
         addParam(createParamCentered<MVXKnob_wh>(
             mm2px(Vec(kCol1, kRow4)), module, Aetherion::MIX_PARAM));
         // MODE: 3-position switch
         addParam(createParamCentered<CKSSThree>(
             mm2px(Vec(kCol2, kRow4)), module, Aetherion::MODE_PARAM));
-        // Mode position labels (small text below switch)
-        addChild(aeLabel(Vec(kCol2 - 6.f, kRow4 + 5.5f), "CLN", 5.f, modeCol));
-        addChild(aeLabel(Vec(kCol2,        kRow4 + 5.5f), "WRM", 5.f, modeCol));
-        addChild(aeLabel(Vec(kCol2 + 6.f,  kRow4 + 5.5f), "DEG", 5.f, modeCol));
-
         // SHIMMER toggle — centred between MIX and MODE at the same row.
-        // Teal label distinguishes it from the lo-fi mode group.
         NVGcolor shimCol = nvgRGB(0xff, 0xff, 0xff);  // white
-        addChild(aeLabel(Vec(kCentre, kRow4 - 5.0f), "SHM", 5.5f, shimCol));
+        addChild(aeLabel(Vec(kCentre, kRow4 - 5.34f), "SHIMMER", 5.5f, shimCol));
         addParam(createParamCentered<CKSS>(
             mm2px(Vec(kCentre, kRow4)), module, Aetherion::SHIMMER_PARAM));
 
@@ -668,49 +662,48 @@ struct AetherionWidget : ModuleWidget {
             mm2px(Vec(kPort4, kPortRow)), module, Aetherion::OUT_R_OUTPUT));
 
         // ── SWELL section (83–91 mm) ──
-        // 4-element row: FRZ button | RISE trim | SWELL OUT | FALL trim
-        // k4W positions (mm) keep even spacing across 50.8mm:
-        constexpr float kSwellRow   = 91.0f;
-        constexpr float kSwellLabel = 83.0f;
-        constexpr float k4W1 = 8.0f;   // FRZ button (left)
-        constexpr float k4W2 = 19.0f;  // RISE
-        constexpr float k4W3 = 30.0f;  // SWELL OUT
-        constexpr float k4W4 = 41.0f;  // FALL
+        // 4-element row: FREEZE button | RISE trim | SWELL OUT | FALL trim
+        // Aligned with the port columns for visual consistency.
+        constexpr float kSwellRow   = 94.05f;
+        constexpr float kSwellLabel = 86.05f;
+        constexpr float kSwellLabelAbove = 5.34f;  // 1px higher than 5.0
         NVGcolor swellCol = nvgRGB(0xff, 0xff, 0xff);  // white
         addChild(aeLabel(Vec(kCentre, kSwellLabel), "SWELL", 6.5f, swellCol, false));
         // FREEZE button + LED
-        addChild(aeLabel(Vec(k4W1, kSwellRow - 5.0f), "FRZ", 5.5f, swellCol));
+        addChild(aeLabel(Vec(kPort1, kSwellRow - kSwellLabelAbove), "FREEZE", 5.5f, swellCol));
         addParam(createParamCentered<VCVButton>(
-            mm2px(Vec(k4W1, kSwellRow)), module, Aetherion::FREEZE_BTN_PARAM));
+            mm2px(Vec(kPort1, kSwellRow)), module, Aetherion::FREEZE_BTN_PARAM));
         addChild(createLightCentered<TinyLight<GreenLight>>(
-            mm2px(Vec(k4W1 + 3.5f, kSwellRow - 3.5f)), module, Aetherion::FREEZE_LIGHT));
+            mm2px(Vec(kPort1 + 3.5f, kSwellRow - 3.5f)), module, Aetherion::FREEZE_LIGHT));
         // RISE trim
-        addChild(aeLabel(Vec(k4W2, kSwellRow - 5.0f), "RISE", 5.5f, swellCol));
+        addChild(aeLabel(Vec(kPort2, kSwellRow - kSwellLabelAbove), "RISE", 5.5f, swellCol));
         addParam(createParamCentered<Trimpot>(
-            mm2px(Vec(k4W2, kSwellRow)), module, Aetherion::SWELL_RISE_PARAM));
+            mm2px(Vec(kPort2, kSwellRow)), module, Aetherion::SWELL_RISE_PARAM));
         // SWELL OUT port
-        addChild(aeLabel(Vec(k4W3, kSwellRow - 5.0f), "OUT", 5.5f, swellCol));
+        addChild(aeLabel(Vec(kPort3, kSwellRow - kSwellLabelAbove), "OUT", 5.5f, swellCol));
         addOutput(createOutputCentered<MVXport_s1_red>(
-            mm2px(Vec(k4W3, kSwellRow)), module, Aetherion::SWELL_OUT_OUTPUT));
+            mm2px(Vec(kPort3, kSwellRow)), module, Aetherion::SWELL_OUT_OUTPUT));
         // FALL trim
-        addChild(aeLabel(Vec(k4W4, kSwellRow - 5.0f), "FALL", 5.5f, swellCol));
+        addChild(aeLabel(Vec(kPort4, kSwellRow - kSwellLabelAbove), "FALL", 5.5f, swellCol));
         addParam(createParamCentered<Trimpot>(
-            mm2px(Vec(k4W4, kSwellRow)), module, Aetherion::SWELL_FALL_PARAM));
+            mm2px(Vec(kPort4, kSwellRow)), module, Aetherion::SWELL_FALL_PARAM));
 
         // ── CV row: FRZ GATE / DCY CV / SZ CV / LFO CV (4 ports) ──
-        // Respaced to 4 ports at ~10mm intervals across 50.8mm.
-        addChild(aeLabel(Vec(k4W1,   kCvRow - 5.0f), "FRZ G",  5.5f, portCol));
-        addChild(aeLabel(Vec(k4W2,   kCvRow - 5.0f), "DCY CV", 5.5f, portCol));
-        addChild(aeLabel(Vec(k4W3,   kCvRow - 5.0f), "SZ CV",  5.5f, portCol));
-        addChild(aeLabel(Vec(k4W4,   kCvRow - 5.0f), "LFO CV", 5.5f, portCol));
+        // Aligned with the I/O port row below for even spacing.
+        constexpr float kCvRowAdj = kCvRow + 5.42f;  // shifted down 9px + previous 7px
+        constexpr float kCvLabelAbove = 5.34f;  // 1px higher than 5.0
+        addChild(aeLabel(Vec(kPort1, kCvRowAdj - kCvLabelAbove), "FRZ G",  5.5f, portCol));
+        addChild(aeLabel(Vec(kPort2, kCvRowAdj - kCvLabelAbove), "DCY CV", 5.5f, portCol));
+        addChild(aeLabel(Vec(kPort3, kCvRowAdj - kCvLabelAbove), "SZ CV",  5.5f, portCol));
+        addChild(aeLabel(Vec(kPort4, kCvRowAdj - kCvLabelAbove), "LFO CV", 5.5f, portCol));
         addInput(createInputCentered<MVXport_s1>(
-            mm2px(Vec(k4W1, kCvRow)), module, Aetherion::FREEZE_GATE_INPUT));
+            mm2px(Vec(kPort1, kCvRowAdj)), module, Aetherion::FREEZE_GATE_INPUT));
         addInput(createInputCentered<MVXport_s1>(
-            mm2px(Vec(k4W2, kCvRow)), module, Aetherion::DECAY_CV_INPUT));
+            mm2px(Vec(kPort2, kCvRowAdj)), module, Aetherion::DECAY_CV_INPUT));
         addInput(createInputCentered<MVXport_s1>(
-            mm2px(Vec(k4W3, kCvRow)), module, Aetherion::SIZE_CV_INPUT));
+            mm2px(Vec(kPort3, kCvRowAdj)), module, Aetherion::SIZE_CV_INPUT));
         addInput(createInputCentered<MVXport_s1>(
-            mm2px(Vec(k4W4, kCvRow)), module, Aetherion::LOFI_CV_INPUT));
+            mm2px(Vec(kPort4, kCvRowAdj)), module, Aetherion::LOFI_CV_INPUT));
     }
 };
 
