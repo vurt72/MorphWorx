@@ -4,7 +4,7 @@ This folder is the canonical home for MorphWorx manuals and release notes.
 
 ## Module Manuals
 
-- [Aetherion Manual](aetherion-manual.md) — Spectral reverb / resonator
+- [Aetherion Manual](aetherion-manual.md) — Reverb with lo-fi tape degradation, has a Shimmer mode
 - [Amenolith Manual](amenolith-manual.md) — Sample-based drum machine
 - [FerroKlast Manual](ferroklast-manual.md) — Analog-modelled drum synthesizer
 - [Minimalith Manual](minimalith-manual.md) — PreenFM2-based FM synthesizer voice
