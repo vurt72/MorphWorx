@@ -12,10 +12,7 @@ This folder is the canonical home for MorphWorx manuals, release notes, and tech
 - [Septagon Manual](septagon-manual.md) — Generative polyrhythmic drum pattern generator
 - [SlideWyrm Manual](slidewyrm-manual.md) — Generative TB-303 style acid sequencer
 - [Trigonomicon Manual](trigonomicon-manual.md) — Trigonometric drum machine
-
-Not yet documented:
-
-- Xenostasis
+- [Xenostasis Manual](xenostasis-manual.md) — Autonomous hybrid synthesis organism
 
 ## Release Notes
 
