@@ -6,10 +6,15 @@ VCV Rack 2 and 4ms MetaModule plugin.
 
 ## Available Manuals
 
-- **[Aetherion Manual](docs/aetherion-manual.md)**
-- **[Amenolith Manual](docs/amenolith-manual.md)**
-- **[Phaseon1 Manual](docs/phaseon1-manual.md)**
-- **[FerroKlast Manual](docs/ferroklast-manual.md)**
+- **[Aetherion Manual](docs/aetherion-manual.md)** — Reverb with lo-fi tape degradation, has a Shimmer mode
+- **[Amenolith Manual](docs/amenolith-manual.md)** — Sample-based drum machine
+- **[FerroKlast Manual](docs/ferroklast-manual.md)** — Analog-modelled drum synthesizer
+- **[Minimalith Manual](docs/minimalith-manual.md)** — PreenFM2-based FM synthesizer voice
+- **[Phaseon1 Manual](docs/phaseon1-manual.md)** — Phase-modulation wavetable synthesizer
+- **[Septagon Manual](docs/septagon-manual.md)** — Generative polyrhythmic drum pattern generator
+- **[SlideWyrm Manual](docs/slidewyrm-manual.md)** — Generative TB-303 style acid sequencer
+- **[Trigonomicon Manual](docs/trigonomicon-manual.md)** — Pattern generator with mutate function
+- **[Xenostasis Manual](docs/xenostasis-manual.md)** — Autonomous hybrid synthesis organism
 
 ## Modules
 
