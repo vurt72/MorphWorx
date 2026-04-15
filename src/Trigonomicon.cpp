@@ -3528,8 +3528,8 @@ struct TrigonomiconWidget : ModuleWidget {
 		#else
 			using TrigonomiconPort = MVXPort;
 			using TrigonomiconOutputPort = MVXPort;
-			// MetaModule expects SliderKnob-derived params for addParam().
-			using TrigonomiconKnob = app::SliderKnob;
+			// MetaModule: use standard black knobs — renders correctly on the faceplate.
+			using TrigonomiconKnob = RoundSmallBlackKnob;
 		#endif
 
 		// Restore only the pattern display text on the screen.

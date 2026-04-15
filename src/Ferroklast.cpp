@@ -1404,7 +1404,10 @@ struct LaneState {
 		float shellOscB = lerp(shellPureB, shellTriB, shellTriangleMix);
 
 		if (isSnare) {
-			float shellCore = shellOscA * shellMixA + shellOscB * shellMixB;
+			// SN2 only: shellEnv provides independent decay for shellOscB (upper mode fades faster).
+			// SN1 uses shellEnv=0 for a different purpose; guard with machine check to avoid regression.
+			float shellCoreEnv = (machine == MACHINE_SNARE2) ? shellEnv : 1.f;
+			float shellCore = shellOscA * shellMixA + shellOscB * shellMixB * shellCoreEnv;
 			float bodyBuzz = (noiseBody * shellBuzzAmount + noiseBright * shellBuzzAmount * 0.12f);
 			float bodySignal = softClip((shellCore + bodyBuzz) * bodyAmount, drive * 0.35f) * ampEnv;
 			float wireRaw = (noiseBody * noiseBodyAmount + noiseBright * noiseBrightAmount) * noiseEnv;
@@ -1683,6 +1686,8 @@ struct Ferroklast : Module {
 		DUCK_DEPTH_PARAM,
 		DUCK_PUMP_PARAM,
 		DUCK_ON_PARAM,
+		SAVE_PARAM,
+		RECALL_PARAM,
 		PARAMS_LEN
 	};
 
@@ -1723,6 +1728,13 @@ struct Ferroklast : Module {
 	};
 
 	LaneState lanes[kNumVoices];
+	// Save/Recall user defaults
+	float savedParams_[PARAMS_LEN] = {};
+	bool hasSavedPreset_ = false;
+	bool lastSaveButton_ = false;
+	bool lastRecallButton_ = false;
+	bool needsDiskSave_ = false;
+
 	float macroSmooth[8] = {0.64f, 0.35f, 0.52f, 0.45f, 0.28f, 0.22f, 0.50f, 0.50f};
 	float finalDriveSmooth = 0.f;
 	float snareCutSmooth = 0.50f;
@@ -1799,6 +1811,8 @@ struct Ferroklast : Module {
 		configParam(DUCK_DEPTH_PARAM, 0.f, 1.f, 0.f,  "Duck depth");
 		configParam(DUCK_PUMP_PARAM,  0.f, 1.f, 0.4f, "Duck pump — convex quadratic (0) to concave (1): shapes how long the duck tail lingers");
 		configSwitch(DUCK_ON_PARAM,   0.f, 1.f, 0.f,  "Kick ducking", {"Off", "On"});
+		configButton(SAVE_PARAM,   "Save current settings as defaults");
+		configButton(RECALL_PARAM, "Recall saved settings");
 		configParam(KICK_CURVE_PARAM,  0.f, 1.f, 0.5f, "Kick curve — 808 fast pitch drop (0) to 909 slow sweep (1)");
 		configParam(KICK_RUMBLE_PARAM, 0.f, 1.f, 0.f,  "Kick rumble — delayed sub-bass bloom that swells after the transient");
 		configParam(KICK_ATTACK_TONE_PARAM, 0.f, 1.f, 0.5f, "Kick attack tone — dark beater thud (0) to bright click (1)");
@@ -1842,6 +1856,9 @@ struct Ferroklast : Module {
 			getMMClapHardSample();
 		}
 		onReset();
+#ifndef METAMODULE
+		loadUserDefaults();
+#endif
 	}
 
 	bool isMetaModuleVariant() const {
@@ -1915,6 +1932,76 @@ struct Ferroklast : Module {
 		grooveCvOutput_ = 0.18f;
 		grooveMetalMemory_ = 0.f;
 		grooveAccentMemory_ = 0.f;
+	}
+
+#ifndef METAMODULE
+	void saveUserDefaults() {
+		json_t* rootJ = json_object();
+		json_t* paramsJ = json_array();
+		for (int i = 0; i < PARAMS_LEN; ++i) {
+			if (i == SAVE_PARAM || i == RECALL_PARAM) {
+				json_array_append_new(paramsJ, json_real(0.0));
+			} else {
+				json_array_append_new(paramsJ, json_real((double)savedParams_[i]));
+			}
+		}
+		json_object_set_new(rootJ, "params", paramsJ);
+		std::string dir = asset::user("MorphWorx");
+		system::createDirectory(dir);
+		std::string path = dir + "/ferroklast-defaults.json";
+		json_dump_file(rootJ, path.c_str(), JSON_INDENT(2));
+		json_decref(rootJ);
+	}
+
+	void loadUserDefaults() {
+		std::string path = asset::user("MorphWorx/ferroklast-defaults.json");
+		json_error_t error;
+		json_t* rootJ = json_load_file(path.c_str(), 0, &error);
+		if (!rootJ) return;
+		json_t* paramsJ = json_object_get(rootJ, "params");
+		if (paramsJ && json_is_array(paramsJ)) {
+			int n = std::min((int)json_array_size(paramsJ), (int)PARAMS_LEN);
+			for (int i = 0; i < n; ++i) {
+				json_t* vJ = json_array_get(paramsJ, i);
+				if (vJ && json_is_number(vJ)) {
+					savedParams_[i] = (float)json_number_value(vJ);
+				}
+			}
+			hasSavedPreset_ = true;
+			// Apply saved values as initial state for new module instances
+			for (int i = 0; i < PARAMS_LEN; ++i) {
+				if (i == SAVE_PARAM || i == RECALL_PARAM) continue;
+				params[i].setValue(savedParams_[i]);
+			}
+		}
+		json_decref(rootJ);
+	}
+#endif
+
+	json_t* dataToJson() override {
+		json_t* rootJ = json_object();
+		if (hasSavedPreset_) {
+			json_t* presetJ = json_array();
+			for (int i = 0; i < PARAMS_LEN; ++i) {
+				json_array_append_new(presetJ, json_real((double)savedParams_[i]));
+			}
+			json_object_set_new(rootJ, "savedPreset", presetJ);
+		}
+		return rootJ;
+	}
+
+	void dataFromJson(json_t* rootJ) override {
+		json_t* presetJ = json_object_get(rootJ, "savedPreset");
+		if (presetJ && json_is_array(presetJ)) {
+			int n = std::min((int)json_array_size(presetJ), (int)PARAMS_LEN);
+			for (int i = 0; i < n; ++i) {
+				json_t* vJ = json_array_get(presetJ, i);
+				if (vJ && json_is_number(vJ)) {
+					savedParams_[i] = (float)json_number_value(vJ);
+				}
+			}
+			hasSavedPreset_ = true;
+		}
 	}
 
 	void updateGrooveCvFromHit(MachineId machine, float accent, float variationCentered, float decay, float body, float color, float chaos, float material) {
@@ -2602,6 +2689,7 @@ struct Ferroklast : Module {
 				// baseFreq matched to SNARE1 (180 Hz) so both snares are tuned together.
 				// Noise: white noise through BP ~1-5kHz = the characteristic 808 wire/snap buzz.
 				// Ref: CSound: aMod1 oscil .4, 178, 1; aMod2 oscil .2, 326, 1; butbp noise, 5000, 1
+				// VAR knob morphs from hybrid/modern snare (0) to authentic TR-808 character (1).
 				lane.baseFreq = 180.f * semitoneRatio(tune * 0.15f);
 				// No FM: 808 body tones are near-pure sine from bridge circuits, not FM operators
 				lane.modRatio = 1.0f;
@@ -2609,41 +2697,53 @@ struct Ferroklast : Module {
 				lane.fmAmount = 0.0f;
 				// Shell oscillators = bridge circuit tones (pure sine via shellTriangleMix=0)
 				lane.shellFreqA      = lane.baseFreq;                                               // lower mode ~180 Hz
-				lane.shellFreqB      = lane.baseFreq * (1.83f + variationCentered * 0.08f);         // upper mode ~330 Hz
+				lane.shellFreqB      = lane.baseFreq * lerp(1.83f + variationCentered * 0.08f, 1.83f, variation); // upper mode ~330 Hz; VAR=1 locks to clean 1.83x
 				lane.shellMixA       = 0.55f + bodyForVoice * 0.08f;                                // dominant lower tone
 				lane.shellMixB       = 0.22f + bodyForVoice * 0.06f + clamp01(color) * 0.10f;      // upper mode; COLOR shifts balance
 				lane.shellTriangleMix = 0.0f;   // pure sine waveform — authentic 808 bridge character
 				lane.shellBuzzAmount  = 0.0f;   // noise stays completely out of the tone pathway
-				lane.shellEnv        = 0.f;
-				lane.shellCoef       = lane.ampCoef;
-				lane.bodyAmount = 0.38f + bodyForVoice * 0.06f;
+				// shellEnv starts at 1 and decays via shellCoef, applied only to shellOscB in render.
+				// VAR=0: shellCoef ≈ 1 (no decay) — shellOscB unaffected, hybrid sound preserved.
+				// VAR=1: shellOscB fades at ~60-80ms, exposing the longer shellOscA sine tail (authentic 808).
+				lane.shellEnv  = 1.f;
+				lane.shellCoef = decayCoef(lerp(999.f, 0.030f + decay * 0.080f, variation), sampleRate);
+				// Phase randomization: adds per-hit micro-variation / beating at higher VAR values
+				lane.shellPhaseA += rack::random::uniform() * variation * 0.35f;
+				lane.shellPhaseB += rack::random::uniform() * variation * 0.35f;
+				// Body amplitude: VAR=0 → hybrid body-forward (0.38); VAR=1 → authentic 808 (0.28).
+				// Real 808 tone body is subtle warmth/roundness — the wire buzz is the primary character.
+				lane.bodyAmount = lerp(0.38f, 0.28f, variation) + bodyForVoice * 0.06f;
 				lane.subAmount  = 0.0f;
-				// Noise (snappy): noiseToneCoef very small -> noiseBright ≈ white noise.
-				// BP filter at 1-5kHz shapes it into the 808 wire buzz character.
-				// noiseBrightAmount boosted: BP filter passes ~8% of white noise energy,
-				// so raw amount must be high to compete with the body sine tones.
-				lane.noiseBodyAmount   = 0.04f + noiseMacro * 0.06f;
-				lane.noiseBrightAmount = 1.60f + noiseMacro * 0.80f + snap * 0.40f;
+				// Noise wire: VAR=1 wire buzz dominates the attack. noiseBrightAmount must be high
+				// because the BP filter absorbs most of it — raw source needs to be loud.
+				lane.noiseBodyAmount   = lerp(0.04f, 0.14f, variation) + noiseMacro * lerp(0.06f, 0.08f, variation);
+				lane.noiseBrightAmount = lerp(1.60f, 2.20f, variation) + noiseMacro * lerp(0.80f, 0.60f, variation) + snap * lerp(0.40f, 0.35f, variation);
 				lane.noiseToneCoef     = 0.004f + 0.008f * variation;   // tight LP -> noiseBright ≈ white
-				// snareCut = "SNAPPY brightness": higher = crispier high-freq crack
+				// Filter: VAR=0 → bright (1.2-4.8kHz); VAR=1 → midrange (800-2.8kHz) for 808 wire character.
+				// Floor raised to 800Hz at VAR=1 to keep noise band clear of the 180/330Hz tone region.
 				lane.cutoff = rack::math::clamp(
-					1200.f + snareCut * 3600.f + accentShape * 400.f + snap * 300.f + variationCentered * 300.f,
+					lerp(1200.f + snareCut * 3600.f + accentShape * 400.f + snap * 300.f + variationCentered * 300.f,
+					      800.f + snareCut * 2000.f + accentShape * 300.f + snap * 200.f,
+					     variation),
 					400.f, sampleRate * 0.42f);
 				lane.filterMode  = FILTER_BP;
-				// High damping (wide BP) is critical: at resonance=0.75, BW = 0.75*cutoff.
-				// Low resonance would give Q=20+ and pass <1% of noise energy — inaudible.
-				lane.resonance   = rack::math::clamp(0.70f + snareRes * 0.20f, 0.f, 0.95f);
+				// VAR=0 → tight resonant BP (0.70); VAR=1 → wider band (0.45) so more noise energy passes.
+				// Very low q_ (e.g. 0.25) actually narrows the SVF bandpass and passes less total noise.
+				lane.resonance   = rack::math::clamp(lerp(0.70f, 0.45f, variation) + snareRes * 0.20f, 0.f, 0.95f);
 				lane.snareFatMix = 0.0f;    // clean tone/noise separation — no fat body mix
 				lane.crushAmount = 0.0f;
 				lane.drive = rack::math::clamp(0.05f + punch * 0.08f + snareDrive * 0.45f, 0.f, 0.80f);
-				// Near-zero pitch sweep: 808 bridge tones are essentially constant pitch
-				lane.pitchSweep = 0.09f + punch * 0.05f;
+				// Pitch sweep: VAR=0 → slight kick-like sweep; VAR=1 → zero (static oscillators, authentic 808)
+				lane.pitchSweep = lerp(0.09f + punch * 0.05f, 0.0f, variation);
 				lane.pitchCoef  = decayCoef(0.006f + punch * 0.003f, sampleRate);
-				// Tone decay: DECAY + BODY control body length
-				lane.ampCoef   = decayCoef(0.020f + decay * 0.160f + bodyForVoice * 0.040f, sampleRate);
-				// Snappy (noise) decay: always shorter than tone body
-				// snareCut = 0 -> tight snap; snareCut = 1 -> longer washy wire trail
-				lane.noiseCoef = decayCoef(0.010f + snareCut * 0.060f + decay * 0.035f, sampleRate);
+				// Tone decay: VAR=0 → hybrid (20ms min, 180ms max); VAR=1 → 808 (3ms min, 203ms max).
+				// bodyForVoice contribution scaled down inside lerp so it doesn't add a 40ms floor at VAR=1.
+				lane.ampCoef   = decayCoef(lerp(0.020f + decay * 0.160f + bodyForVoice * 0.040f,
+				                               0.003f + decay * 0.200f + bodyForVoice * 0.008f, variation), sampleRate);
+				// Noise decay: VAR=1 → 3ms min (near-click) to 63ms max.
+				// Wire and tone decay together at min, wire fades first at higher decay settings.
+				lane.noiseCoef = decayCoef(lerp(0.010f + snareCut * 0.060f + decay * 0.035f,
+				                               0.003f + snareCut * 0.050f + decay * 0.060f, variation), sampleRate);
 				// Transient: sharp downward-chirping stick click
 				lane.transientFreq    = 2200.f + snap * 900.f + variationCentered * 450.f;
 				lane.transientChirpRate = 0.9985f;
@@ -2984,6 +3084,30 @@ struct Ferroklast : Module {
 				duckReleaseCoef_ = std::exp(-1.f / (releaseTime * sampleRateCache));
 			}
 			// groove coefs are sample-rate-only constants; updated in onSampleRateChange.
+
+			// Save/Recall button edge detection (control rate is sufficient)
+			{
+				bool saveNow = params[SAVE_PARAM].getValue() > 0.5f;
+				if (saveNow && !lastSaveButton_) {
+					for (int i = 0; i < PARAMS_LEN; ++i) {
+						if (i == SAVE_PARAM || i == RECALL_PARAM) continue;
+						savedParams_[i] = params[i].getValue();
+					}
+					hasSavedPreset_ = true;
+					needsDiskSave_ = true;
+				}
+				lastSaveButton_ = saveNow;
+
+				bool recallNow = params[RECALL_PARAM].getValue() > 0.5f;
+				if (recallNow && !lastRecallButton_ && hasSavedPreset_) {
+					for (int i = 0; i < PARAMS_LEN; ++i) {
+						if (i == SAVE_PARAM || i == RECALL_PARAM) continue;
+						params[i].setValue(savedParams_[i]);
+					}
+				}
+				lastRecallButton_ = recallNow;
+			}
+
 #ifndef METAMODULE
 			// Update reverb parameters at control rate (not per-sample)
 			// Clamp reverb_time to 0.98 max: krt > 1.0 in the feedback loop causes
@@ -3324,6 +3448,20 @@ struct FerroklastWidget : ModuleWidget {
 		const float duckMidX    = (xCv + xCv2) * 0.5f;
 		const float xD1 = duckMidX - duckSpacingMm, xDMid = duckMidX, xD2 = duckMidX + duckSpacingMm;
 		const float duckLabelShift = 7.f * (25.4f / 75.f);
+
+		// SAVE / RECALL buttons — placed just above the DUCKING section
+		{
+			const float saveRecallY    = duckLbY - 5.f * (25.4f / 75.f) - 6.f * (25.4f / 75.f);
+			const float saveRecallLbY  = saveRecallY - 13.f * (25.4f / 75.f);
+			const float srSpacing      = duckSpacingMm;
+			const float xSave   = duckMidX - srSpacing * 0.5f;
+			const float xRecall = duckMidX + srSpacing * 0.5f;
+			addChild(fkLabel(Vec(xSave,   saveRecallLbY), "SAVE",   7.f));
+			addChild(fkLabel(Vec(xRecall, saveRecallLbY), "RECALL", 7.f));
+			addParam(createParamCentered<TL1105>(mm2px(Vec(xSave,   saveRecallY)), module, Ferroklast::SAVE_PARAM));
+			addParam(createParamCentered<TL1105>(mm2px(Vec(xRecall, saveRecallY)), module, Ferroklast::RECALL_PARAM));
+		}
+
 		addChild(fkLabel(Vec((xD1 + xD2) * 0.5f, duckLbY), "DUCKING", largeKnobLabelSize));
 		addChild(fkLabel(Vec(xD1,   duckLbY + duckLabelShift), "DPT", 7.f));
 		addParam(createParamCentered<Trimpot>(mm2px(Vec(xD1,   duckY)), module, Ferroklast::DUCK_DEPTH_PARAM));
@@ -3460,6 +3598,19 @@ struct FerroklastWidget : ModuleWidget {
 			addOutput(createOutputCentered<MVXport_silver_red>(mm2px(Vec(x, wetY)), module, Ferroklast::AUDIO_OUTPUT_BASE + i));
 		}
 	}
+
+#ifndef METAMODULE
+	void step() override {
+		ModuleWidget::step();
+		if (module) {
+			Ferroklast* fk = static_cast<Ferroklast*>(module);
+			if (fk->needsDiskSave_) {
+				fk->needsDiskSave_ = false;
+				fk->saveUserDefaults();
+			}
+		}
+	}
+#endif
 };
 
 struct FerroklastMM : Ferroklast {

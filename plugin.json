@@ -1,7 +1,7 @@
 {
   "slug": "MorphWorx",
   "name": "MorphWorx",
-  "version": "2.1.2",
+  "version": "2.1.3",
   "license": "GPL-3.0-or-later",
   "brand": "MorphWorx",
   "description": "Generative drum sequencers, experimental synth voices, and FM percussion for VCV Rack and MetaModule.",

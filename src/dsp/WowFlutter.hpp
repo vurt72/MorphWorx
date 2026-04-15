@@ -58,6 +58,10 @@ public:
         // are 0 and both phases stay fixed, producing a DC constant instead
         // of modulation — completely inaudible as pitch drift.
         if (wowInc_ == 0.f) return 0.f;
+        // Depth-0 shortcut: skip phase/LUT/RNG work when Mod knob is at zero.
+        // Saves ~15 cycles × 8 FDN lines = ~120 cycles/sample at default settings.
+        // Phasors stay frozen until depth rises — no jump on resume.
+        if (depth < 0.001f) return 0.f;
 
         // --- Advance phase accumulators ---
         wowPhase_ += wowInc_;

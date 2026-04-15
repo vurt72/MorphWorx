@@ -1,6 +1,7 @@
 #include "plugin.hpp"
 #include "dsp/Predelay.hpp"
 #include "dsp/FDN.hpp"
+#include "dsp/Diffusion.hpp"
 
 #ifndef METAMODULE
 #include "ui/PngPanelBackground.hpp"
@@ -48,15 +49,23 @@ static float fastExpLut(float x) {
 
 struct Aetherion : Module {
     enum ParamId {
+        // Row 1: PREDELAY | DIFFUSION | SIZE
         PREDELAY_PARAM,
+        DIFFUSION_PARAM,
         SIZE_PARAM,
+        // Row 2: DECAY | MOD | HI DAMP
         DECAY_PARAM,
+        MOD_PARAM,
         HI_DAMP_PARAM,
+        // Row 3: LO DAMP | TILT | LO-FI
         LO_DAMP_PARAM,
+        TILT_PARAM,
         LOFI_PARAM,
+        // Row 4: MIX | SHIMMER | MODE
         MIX_PARAM,
-        MODE_PARAM,
         SHIMMER_PARAM,
+        MODE_PARAM,
+        // SWELL + FREEZE
         FREEZE_BTN_PARAM,
         SWELL_RISE_PARAM,
         SWELL_FALL_PARAM,
@@ -69,6 +78,9 @@ struct Aetherion : Module {
         SIZE_CV_INPUT,
         LOFI_CV_INPUT,
         FREEZE_GATE_INPUT,
+        DIFF_CV_INPUT,
+        TILT_CV_INPUT,
+        MOD_CV_INPUT,
         INPUTS_LEN
     };
     enum OutputId {
@@ -91,19 +103,30 @@ struct Aetherion : Module {
     static constexpr int kControlRate = 16;
 
     // DSP blocks
-    morphworx::Predelay       predelay_;
-    morphworx::FDN            fdn_;
+    morphworx::Predelay   predelay_;
+    morphworx::FDN        fdn_;
+    morphworx::Diffusion  diffusion_;
 
     // Smoothed parameter state (one-pole IIR per param)
-    float smoothPredelay_ = 0.f;
-    float smoothSize_     = 1.f;
-    float smoothDecay_    = 2.f;
-    float smoothHiDamp_   = 8000.f;
-    float smoothLoDamp_   = 100.f;
-    float smoothLofi_     = 0.f;
-    float smoothMix_      = 0.5f;
-    float cachedWetGain_  = 0.7071f;
-    float cachedDryGain_  = 0.7071f;
+    float smoothPredelay_   = 0.f;
+    float smoothSize_       = 1.f;
+    float smoothDecay_      = 2.f;
+    float smoothHiDamp_     = 8000.f;
+    float smoothLoDamp_     = 100.f;
+    float smoothLofi_       = 0.f;
+    float smoothMix_        = 0.5f;
+    float smoothDiffusion_  = 0.5f;
+    float smoothMod_        = 0.1f;
+    float smoothTilt_       = 0.f;
+    float cachedWetGain_    = 0.7071f;
+    float cachedDryGain_    = 0.7071f;
+
+    // TILT EQ state: per-channel one-pole LP state (wet signal only)
+    // Shelf formula: lp = lp + coeff*(x - lp); hi = x - lp;
+    // output = lp*(1 + loGain) + hi*(1 + hiGain)  where hiGain = -loGain = tilt*0.5
+    // tiltLpCoeff_ computed at control-rate from fc=600 Hz.
+    float tiltLpState_[2]  = {};   // [0]=L, [1]=R
+    float tiltLpCoeff_     = 0.f;  // set in init / onSampleRateChange
 
     int controlCounter_ = 0;
 
@@ -139,9 +162,10 @@ struct Aetherion : Module {
     static constexpr float kShimStereoSpread = 384.f;  // ~8 ms at 48 kHz
 
     // FREEZE: zeros signal injection so the FDN recirculates its current tail.
-    bool                 freezeActive_     = false;
+    bool                 freezeActive_     = false;  // latched by button
+    float                freezeBlend_      = 0.f;    // 0=normal, 1=fully frozen (slewed)
     dsp::BooleanTrigger  freezeBtnTrigger_;   // detects momentary button press
-    dsp::SchmittTrigger  freezeGateTrigger_;  // detects rising gate edge
+    // Gate CV is level-sensitive (no SchmittTrigger needed)
 
     Aetherion() {
         config(PARAMS_LEN, INPUTS_LEN, OUTPUTS_LEN, LIGHTS_LEN);
@@ -151,23 +175,26 @@ struct Aetherion : Module {
         // e.g. DECAY: stored = log(t), display = e^stored = t seconds.
         static constexpr float kE = 2.71828182845904523536f;
 
-        configParam(PREDELAY_PARAM, 0.f, 250.f, 20.f, "Predelay", " ms");
-        configParam(SIZE_PARAM,     0.5f, 2.0f, 1.0f, "Size");
+        configParam(PREDELAY_PARAM,  0.f,   250.f, 20.f,  "Predelay",  " ms");
+        configParam(DIFFUSION_PARAM, 0.f,   1.f,   0.5f,  "Diffusion");
+        configParam(SIZE_PARAM,      0.5f,  2.0f,  1.0f,  "Size");
         // Decay: log-space 0.05 s … 20 s, default 2 s
         configParam(DECAY_PARAM,    std::log(0.05f), std::log(20.f), std::log(2.f),
                     "Decay", " s", kE);
+        configParam(MOD_PARAM,      0.f,   1.f,   0.1f,  "Mod Depth");
         // Hi Damp: log-space 500 Hz … 16 kHz, default 8 kHz
         configParam(HI_DAMP_PARAM,  std::log(500.f), std::log(16000.f), std::log(8000.f),
                     "Hi Damp", " Hz", kE);
         // Lo Damp: log-space 20 Hz … 1 kHz, default 100 Hz
         configParam(LO_DAMP_PARAM,  std::log(20.f), std::log(1000.f), std::log(100.f),
                     "Lo Damp", " Hz", kE);
-        configParam(LOFI_PARAM,     0.f, 1.f, 0.f, "Lo-Fi");
-        configParam(MIX_PARAM,      0.f, 1.f, 0.5f, "Mix");
-
-        configSwitch(MODE_PARAM, 0.f, 2.f, 1.f, "Mode", {"Clean", "Warm", "Degrade"});
+        configParam(TILT_PARAM,     -1.f,  1.f,   0.f,   "Tilt EQ");
+        configParam(LOFI_PARAM,     0.f,   1.f,   0.f,   "Lo-Fi");
+        configParam(MIX_PARAM,      0.f,   1.f,   0.5f,  "Mix");
+        configSwitch(SHIMMER_PARAM, 0.f,   1.f,   0.f,   "Shimmer", {"Off", "On"});
+        configSwitch(MODE_PARAM,    0.f,   2.f,   1.f,   "Mode", {"Clean", "Warm", "Degrade"});
         paramQuantities[MODE_PARAM]->snapEnabled = true;
-
+        configButton(FREEZE_BTN_PARAM, "Freeze");
         // SWELL: log-space ms. Base=e so tooltip shows natural ms value.
         // RISE: 1 – 2000 ms, default 50 ms
         // FALL: 10 – 10000 ms, default 500 ms
@@ -175,15 +202,16 @@ struct Aetherion : Module {
                     "Swell Rise", " ms", kE);
         configParam(SWELL_FALL_PARAM, std::log(10.f),   std::log(10000.f), std::log(500.f),
                     "Swell Fall", " ms", kE);
-        configSwitch(SHIMMER_PARAM, 0.f, 1.f, 0.f, "Shimmer", {"Off", "On"});
-        configButton(FREEZE_BTN_PARAM, "Freeze");
 
-        configInput(IN_L_INPUT,    "Left");
-        configInput(IN_R_INPUT,    "Right (normalled to Left)");
-        configInput(DECAY_CV_INPUT, "Decay CV (0-10V adds up to +18 s)");
-        configInput(SIZE_CV_INPUT,  "Size CV (0-10V adds up to +1.5)");
-        configInput(LOFI_CV_INPUT, "Lo-Fi CV (0–10V depth)");
-        configInput(FREEZE_GATE_INPUT, "Freeze gate (rising edge toggles)");
+        configInput(IN_L_INPUT,         "Left");
+        configInput(IN_R_INPUT,         "Right (normalled to Left)");
+        configInput(DECAY_CV_INPUT,     "Decay CV (0-10V adds up to +18 s)");
+        configInput(SIZE_CV_INPUT,      "Size CV (0-10V adds up to +1.5)");
+        configInput(LOFI_CV_INPUT,      "Lo-Fi CV (0-10V depth)");
+        configInput(FREEZE_GATE_INPUT,  "Freeze gate (level-sensitive: ≥1V holds freeze)");
+        configInput(DIFF_CV_INPUT,      "Diffusion CV (0-10V adds 0-1 depth)");
+        configInput(TILT_CV_INPUT,      "Tilt CV (-5V to +5V)");
+        configInput(MOD_CV_INPUT,       "Mod Depth CV (0-10V adds 0-1 depth)");
         configOutput(OUT_L_OUTPUT,   "Left");
         configOutput(OUT_R_OUTPUT,   "Right");
         configOutput(SWELL_OUT_OUTPUT, "Swell (0–10V envelope follower)");
@@ -193,6 +221,8 @@ struct Aetherion : Module {
         configBypass(IN_R_INPUT, OUT_R_OUTPUT);
 
         initExpLut();
+        diffusion_.init(48000.f);
+        initTiltCoeff();
         updateMixGains();
     }
 
@@ -213,11 +243,23 @@ struct Aetherion : Module {
         swellFallCoeff_ = 1.f - fastExpLut(fallExp);
     }
 
+    void initTiltCoeff() {
+        // One-pole LP coefficient for Tilt EQ shelf at fc=600 Hz.
+        // Bilinear approximation: a ≈ (2π*fc/fs) / (1 + 2π*fc/fs)
+        // avoids std::tan — accurate to <2% for fc << fs/6.
+        // Called only from init/onSampleRateChange, never per-sample.
+        if (sampleRate_ <= 0.f) return;
+        float wc = 2.f * 3.14159265f * 600.f / sampleRate_;
+        tiltLpCoeff_ = wc / (1.f + wc);
+    }
+
     void onSampleRateChange(const SampleRateChangeEvent& e) override {
         predelay_.init(e.sampleRate);
         fdn_.init(e.sampleRate);
+        diffusion_.init(e.sampleRate);
         sampleRate_ = e.sampleRate;
         initExpLut();
+        initTiltCoeff();
         updateSwellCoeffs();
         // Reset shimmer state on sample rate change.
         shimWrite_ = 0;
@@ -232,15 +274,21 @@ struct Aetherion : Module {
         Module::onReset(e);
         predelay_.reset();
         fdn_.reset();
-        smoothPredelay_ = 20.f;
-        smoothSize_     = 1.f;
-        smoothDecay_    = 2.f;
-        smoothHiDamp_   = 8000.f;
-        smoothLoDamp_   = 100.f;
-        smoothLofi_     = 0.f;
-        smoothMix_      = 0.5f;
-        controlCounter_ = 0;
-        swellEnv_       = 0.f;
+        diffusion_.reset();
+        smoothPredelay_  = 20.f;
+        smoothSize_      = 1.f;
+        smoothDecay_     = 2.f;
+        smoothHiDamp_    = 8000.f;
+        smoothLoDamp_    = 100.f;
+        smoothLofi_      = 0.f;
+        smoothMix_       = 0.5f;
+        smoothDiffusion_ = 0.5f;
+        smoothMod_       = 0.1f;
+        smoothTilt_      = 0.f;
+        tiltLpState_[0]  = 0.f;
+        tiltLpState_[1]  = 0.f;
+        controlCounter_  = 0;
+        swellEnv_        = 0.f;
         shimWrite_      = 0;
         shimDistA_      = float(kShimBufSize) * 0.25f;
         shimDistB_      = float(kShimBufSize) * 0.75f;
@@ -248,8 +296,8 @@ struct Aetherion : Module {
         shimDistD_      = kShimFifthGrainF * 0.75f;
         std::memset(shimBuf_, 0, sizeof(shimBuf_));
         freezeActive_   = false;
+        freezeBlend_    = 0.f;
         freezeBtnTrigger_.reset();
-        freezeGateTrigger_.reset();
         updateMixGains();
         updateSwellCoeffs();
     }
@@ -268,22 +316,35 @@ struct Aetherion : Module {
         inR *= kInputScale;
 
         // --- FREEZE toggle ---
-        // Button: momentary press toggles. Gate: rising edge toggles.
-        // Both are safe in the audio thread (no allocation in BooleanTrigger
-        // or SchmittTrigger).
+        // Button: momentary press latches freezeActive_.
+        // Gate CV: level-sensitive — high (≥1V) holds freeze regardless of latch.
+        // effectiveFreeze = latched OR gate-held.
         if (freezeBtnTrigger_.process(params[FREEZE_BTN_PARAM].getValue() > 0.5f))
             freezeActive_ = !freezeActive_;
-        if (freezeGateTrigger_.process(inputs[FREEZE_GATE_INPUT].getVoltage(), 0.1f, 2.f))
-            freezeActive_ = !freezeActive_;
-        lights[FREEZE_LIGHT].setBrightness(freezeActive_ ? 1.f : 0.f);
+        bool gateFreeze = inputs[FREEZE_GATE_INPUT].isConnected() &&
+                          inputs[FREEZE_GATE_INPUT].getVoltage() >= 1.f;
+        bool effectiveFreeze = freezeActive_ || gateFreeze;
+        lights[FREEZE_LIGHT].setBrightness(effectiveFreeze ? 1.f : 0.f);
 
-        // Save dry signal BEFORE zeroing the reverb feed — dry path is
-        // always live regardless of freeze state.
+        // Audio-rate FDN freeze (avoids up-to-15-sample lag from control-rate block).
+        fdn_.setFreeze(effectiveFreeze);
+
+        // Smooth blend ramp: ~5 ms at 48 kHz (coeff 0.004 → τ ≈ 250 samples).
+        // Eliminates click on freeze entry/exit.
+        float targetBlend = effectiveFreeze ? 1.f : 0.f;
+        freezeBlend_ += (targetBlend - freezeBlend_) * 0.004f;
+
+        // Save dry signal — always live regardless of freeze state.
         float dryL = inL;
         float dryR = inR;
-        // Zero reverb injection so the FDN recirculates its current tail.
-        // The player can still hear their dry signal over the frozen reverb.
-        if (freezeActive_) { inL = 0.f; inR = 0.f; }
+
+        // Scale reverb injection by (1 - freezeBlend_):
+        //   • Fully frozen → new signal contribution drops to zero (no new energy).
+        //   • Transition → smooth cross-fade in/out of frozen tail.
+        //   • Side effect: during freeze new notes can still layer over the pad
+        //     if freezeBlend_ < 1 (natural blend while ramp is in progress).
+        inL *= (1.f - freezeBlend_);
+        inR *= (1.f - freezeBlend_);
 
         // --- Control-rate parameter smoothing ---
         if (++controlCounter_ >= kControlRate) {
@@ -292,23 +353,33 @@ struct Aetherion : Module {
             // Smoothing coefficient — per control-rate tick
             constexpr float kAlpha = 0.15f;
 
-            float pPredelay = params[PREDELAY_PARAM].getValue();
-            float pSize     = params[SIZE_PARAM].getValue();
+            // Square-root curve: knob stores 0–250 linearly; squaring it then
+            // scaling by 1/250 gives 0–250 ms actual delay with ~4× finer
+            // resolution in the Haas zone (0–40 ms = bottom 40% of knob travel).
+            float _preRaw     = params[PREDELAY_PARAM].getValue();
+            float pPredelay   = _preRaw * _preRaw / 250.f;
+            float pSize       = params[SIZE_PARAM].getValue();
             // Decay, HI/LO damp stored in log-space — apply exp via LUT
             // to avoid transcendentals inside the audio callback.
-            float pDecay    = fastExpLut(params[DECAY_PARAM].getValue());
-            float pHiDamp   = fastExpLut(params[HI_DAMP_PARAM].getValue());
-            float pLoDamp   = fastExpLut(params[LO_DAMP_PARAM].getValue());
-            float pLofi     = params[LOFI_PARAM].getValue();
-            float pMix      = params[MIX_PARAM].getValue();
+            float pDecay      = fastExpLut(params[DECAY_PARAM].getValue());
+            float pHiDamp     = fastExpLut(params[HI_DAMP_PARAM].getValue());
+            float pLoDamp     = fastExpLut(params[LO_DAMP_PARAM].getValue());
+            float pLofi       = params[LOFI_PARAM].getValue();
+            float pMix        = params[MIX_PARAM].getValue();
+            float pDiffusion  = params[DIFFUSION_PARAM].getValue();
+            float pMod        = params[MOD_PARAM].getValue();
+            float pTilt       = params[TILT_PARAM].getValue();
 
-            smoothPredelay_ += kAlpha * (pPredelay - smoothPredelay_);
-            smoothSize_     += kAlpha * (pSize     - smoothSize_);
-            smoothDecay_    += kAlpha * (pDecay    - smoothDecay_);
-            smoothHiDamp_   += kAlpha * (pHiDamp   - smoothHiDamp_);
-            smoothLoDamp_   += kAlpha * (pLoDamp   - smoothLoDamp_);
-            smoothLofi_     += kAlpha * (pLofi     - smoothLofi_);
-            smoothMix_      += kAlpha * (pMix      - smoothMix_);
+            smoothPredelay_  += kAlpha * (pPredelay  - smoothPredelay_);
+            smoothSize_      += kAlpha * (pSize       - smoothSize_);
+            smoothDecay_     += kAlpha * (pDecay      - smoothDecay_);
+            smoothHiDamp_    += kAlpha * (pHiDamp     - smoothHiDamp_);
+            smoothLoDamp_    += kAlpha * (pLoDamp     - smoothLoDamp_);
+            smoothLofi_      += kAlpha * (pLofi       - smoothLofi_);
+            smoothMix_       += kAlpha * (pMix        - smoothMix_);
+            smoothDiffusion_ += kAlpha * (pDiffusion  - smoothDiffusion_);
+            smoothMod_       += kAlpha * (pMod        - smoothMod_);
+            smoothTilt_      += kAlpha * (pTilt       - smoothTilt_);
             updateMixGains();
 
             // Update DSP coefficients at control rate.
@@ -321,11 +392,36 @@ struct Aetherion : Module {
             float cvDecay = inputs[DECAY_CV_INPUT].isConnected()
                                 ? inputs[DECAY_CV_INPUT].getVoltage() * 1.8f
                                 : 0.f;
-            float finalSize  = clamp(smoothSize_  + cvSize,  0.5f, 2.0f);
-            float finalDecay = clamp(smoothDecay_ + cvDecay, 0.05f, 20.f);
+            // DIFF CV: 0-10V adds 0-1
+            float cvDiff  = inputs[DIFF_CV_INPUT].isConnected()
+                                ? inputs[DIFF_CV_INPUT].getVoltage() * 0.1f
+                                : 0.f;
+            // TILT CV: ±5V maps to ±1 (bipolar)
+            float cvTilt  = inputs[TILT_CV_INPUT].isConnected()
+                                ? inputs[TILT_CV_INPUT].getVoltage() * 0.2f
+                                : 0.f;
+            // MOD CV: 0-10V adds 0-1
+            float cvMod   = inputs[MOD_CV_INPUT].isConnected()
+                                ? inputs[MOD_CV_INPUT].getVoltage() * 0.1f
+                                : 0.f;
+
+            float finalSize      = clamp(smoothSize_      + cvSize,  0.5f, 2.0f);
+            float finalDecay     = clamp(smoothDecay_     + cvDecay, 0.05f, 20.f);
+            float finalDiffusion = clamp(smoothDiffusion_ + cvDiff,  0.f, 1.f);
+            float finalTilt      = clamp(smoothTilt_      + cvTilt, -1.f, 1.f);
+            float finalMod       = clamp(smoothMod_       + cvMod,   0.f, 1.f);
+
+            // Tilt EQ: cache hi/lo gains derived from smoothed tilt at control rate.
+            // hiGain in [-0.5, +0.5], loGain is the inverse.
+            // These are applied per-sample below as simple gain scalars on shelf bands.
+            // Store final values directly in smoothed members for per-sample access.
+            smoothTilt_ = finalTilt;   // overwrite with CV-summed+clamped value
+            smoothDiffusion_ = finalDiffusion;
+            smoothMod_       = finalMod;
+
             predelay_.setDelayMs(smoothPredelay_);
             fdn_.setParams(finalSize, finalDecay, smoothHiDamp_, smoothLoDamp_);
-            fdn_.setFreeze(freezeActive_);
+            // fdn_.setFreeze() is now called at audio-rate above; skip here.
 
             // SWELL: recompute AR coefficients at control rate.
             updateSwellCoeffs();
@@ -362,6 +458,7 @@ struct Aetherion : Module {
         // LP darkens the feedback path per-pass (tape-style); soft sat
         // prevents runaway and adds trace even harmonics.
         bool shimmerOn = params[SHIMMER_PARAM].getValue() > 0.5f;
+        float shimL = 0.f, shimR = 0.f;   // computed if shimmerOn, injected after predelay
         if (shimmerOn) {
             const float kShimBufF    = float(kShimBufSize);
             const float kShimOctGain = 0.45f;  // octave feedback
@@ -427,9 +524,9 @@ struct Aetherion : Module {
                 (shimBuf_[1][iC0_R] + fC_R * (shimBuf_[1][(iC0_R+1)&kShimBufMask] - shimBuf_[1][iC0_R])) * wC
               + (shimBuf_[1][iD0_R] + fD_R * (shimBuf_[1][(iD0_R+1)&kShimBufMask] - shimBuf_[1][iD0_R])) * wD;
 
-            // ── Blend, saturate, inject ───────────────────────────────────────
-            float shimL = shimL_oct * kShimOctGain + shimL_fif * kShimFifGain;
-            float shimR = shimR_oct * kShimOctGain + shimR_fif * kShimFifGain;
+            // ── Blend, saturate (injection moved to after predelay) ─────────────
+            shimL = shimL_oct * kShimOctGain + shimL_fif * kShimFifGain;
+            shimR = shimR_oct * kShimOctGain + shimR_fif * kShimFifGain;
 
             // Note: HF buildup is controlled by the FDN HI_DAMP knob, which
             // already applies a per-pass LP on every feedback loop. Adding a
@@ -438,21 +535,34 @@ struct Aetherion : Module {
 
             // Soft saturation x/(1+|x|): transparent at low levels (<5% error
             // for |x|<0.1), hard ceiling prevents feedback runaway.
-            // hard ceiling prevents feedback runaway at high Decay settings.
             shimL = shimL / (1.f + (shimL >= 0.f ? shimL : -shimL));
             shimR = shimR / (1.f + (shimR >= 0.f ? shimR : -shimR));
-
-            inL += shimL;
-            inR += shimR;
         }
 
-        // --- Predelay ---
+        // --- Predelay (first — creates a clean direct/reverb onset gap) ---
         float preL, preR;
         predelay_.process(inL, inR, &preL, &preR);
 
+        // --- Shimmer injection (after predelay: round-trip loop excludes the gap) ---
+        // Scaled by (1 - freezeBlend_): when freeze is active the shimmer inject
+        // fades to zero, preventing runaway feedback through the frozen FDN.
+        // (The shimmer write buffer still runs so state is preserved for release.)
+        if (shimmerOn) {
+            float shimGate = 1.f - freezeBlend_;
+            preL += shimL * shimGate;
+            preR += shimR * shimGate;
+        }
+
+        // --- Diffusion (§3.6 Ebb) ---
+        // Applied after predelay: smears the already-delayed signal into the FDN.
+        // At amount=0 the chain is bypassed (dry pass-through);
+        // at amount=1 it applies the full 4-stage allpass stack.
+        diffusion_.process(preL, preR, &preL, &preR, smoothDiffusion_);
+
         // --- FDN ---
+        // lofiDepth drives saturation (at module output), smoothMod_ drives WowFlutter.
         float wetL, wetR;
-        fdn_.process(preL, preR, &wetL, &wetR, lofiDepth);
+        fdn_.process(preL, preR, &wetL, &wetR, lofiDepth, smoothMod_);
 
         // --- Lo-fi output saturation (WARM / DEGRADE) ---
         // boost = 1 + lofiDepth * 2.5 keeps the signal in the tanh soft-knee
@@ -472,6 +582,30 @@ struct Aetherion : Module {
             wetR = xR * (27.f + xR*xR) / (27.f + 9.f*xR*xR) * restore;
         }
 
+        // --- Tilt EQ (§3.8) — applied to wet signal only ---
+        // One-pole LP shelf at fc=600Hz; hi band = signal minus LP.
+        // hiGain in [-0.5, +0.5]; loGain = -hiGain.
+        // At smoothTilt_=+1: highs boosted 50%, lows cut 50% → brighter tail.
+        // At smoothTilt_=-1: highs cut,   lows boosted           → darker tail.
+        // tiltLpCoeff_ is precomputed at control-rate / onSampleRateChange.
+        if (tiltLpCoeff_ > 0.f && smoothTilt_ != 0.f) {
+            float hiGain = smoothTilt_ * 0.5f;
+            float loGain = -hiGain;
+            // Left
+            tiltLpState_[0] += tiltLpCoeff_ * (wetL - tiltLpState_[0]);
+            float hiL = wetL - tiltLpState_[0];
+            wetL = tiltLpState_[0] * (1.f + loGain) + hiL * (1.f + hiGain);
+            // Right
+            tiltLpState_[1] += tiltLpCoeff_ * (wetR - tiltLpState_[1]);
+            float hiR = wetR - tiltLpState_[1];
+            wetR = tiltLpState_[1] * (1.f + loGain) + hiR * (1.f + hiGain);
+        } else if (tiltLpCoeff_ > 0.f) {
+            // Keep one-pole state tracking even when tilt=0 to avoid DC
+            // jump when tilt is swept from 0 to non-zero.
+            tiltLpState_[0] += tiltLpCoeff_ * (wetL - tiltLpState_[0]);
+            tiltLpState_[1] += tiltLpCoeff_ * (wetR - tiltLpState_[1]);
+        }
+
         // --- SHIMMER write: store wet output into circular buffer; advance heads.
         //     Read heads advance at 2 samples per write-head advance, net rate = 1
         //     sample closer per sample → octave up. When a head's distance reaches
@@ -486,11 +620,13 @@ struct Aetherion : Module {
             shimDistB_ -= 1.f;
             if (shimDistA_ <= 0.f) shimDistA_ += float(kShimBufSize);
             if (shimDistB_ <= 0.f) shimDistB_ += float(kShimBufSize);
+#ifndef METAMODULE
             // Fifth heads: decrement 0.5 → pitch ×1.5 (+7 st)
             shimDistC_ -= 0.5f;
             shimDistD_ -= 0.5f;
             if (shimDistC_ <= 0.f) shimDistC_ += kShimFifthGrainF;
             if (shimDistD_ <= 0.f) shimDistD_ += kShimFifthGrainF;
+#endif
         }
 
         // --- Equal-power dry/wet mix ---
@@ -563,8 +699,8 @@ struct AetherionWidget : ModuleWidget {
     AetherionWidget(Aetherion* module) {
         setModule(module);
 
-        // 10 HP panel = 50.8 mm wide
-        box.size = Vec(RACK_GRID_WIDTH * 10, RACK_GRID_HEIGHT);
+        // 12 HP panel = 60.96 mm wide
+        box.size = Vec(RACK_GRID_WIDTH * 12, RACK_GRID_HEIGHT);
         {
             auto* bg = new bem::PngPanelBackground(
                 asset::plugin(pluginInstance, "res/Aetherion.png"));
@@ -579,79 +715,83 @@ struct AetherionWidget : ModuleWidget {
         NVGcolor modeCol  = nvgRGB(0xff, 0xff, 0xff);  // white
 
         // ── Layout constants (mm) ──
-        // 10 HP = 50.8 mm.  Two-column layout centred on panel.
-        constexpr float kPanelW  = 50.8f;
-        constexpr float kCol1    = 14.0f;                // left column
-        constexpr float kCol2    = kPanelW - 14.0f;      // right column (36.8)
-        constexpr float kCentre  = kPanelW * 0.5f;       // 25.4
+        // 12 HP = 60.96mm.  Three-column layout.
+        constexpr float kPanelW  = 60.96f;
+        constexpr float kCol1    = 13.0f;                // left column
+        constexpr float kCentre  = kPanelW * 0.5f;       // 30.48  (centre column)
+        constexpr float kCol3    = kPanelW - 13.0f;      // right column (47.96)
 
         // Label sits above knob centre by this offset (mm)
         constexpr float kLabelAbove = 7.5f;
 
-        // Knob rows (mm from top)
-        constexpr float kRow1 = 25.0f;    // PREDELAY / SIZE
-        constexpr float kRow2 = 42.0f;    // DECAY / HI DAMP
-        constexpr float kRow3 = 59.0f;    // LO DAMP / LO-FI
-        constexpr float kRow4 = 76.0f;    // MIX / MODE
-        constexpr float kCvRow   = 101.0f; // DCY CV / SZ CV / LFO CV
-        constexpr float kPortRow = 119.05f; // I/O ports (shifted down 9px)
+        // Knob rows (mm from top) — 15 mm spacing, 3-column layout
+        // kKnobShift: 20px down (20 * 25.4 / 75 ≈ 6.773 mm)
+        constexpr float kKnobShift = 20.0f * 25.4f / 75.0f;
+        constexpr float kRow1 = 20.0f + kKnobShift;    // PREDELAY | DIFFUSION | SIZE
+        constexpr float kRow2 = 35.0f + kKnobShift;    // DECAY | MOD | HI DAMP
+        constexpr float kRow3 = 50.0f + kKnobShift;    // LO DAMP | TILT | LO-FI
+        constexpr float kRow4 = 65.0f + kKnobShift;    // MIX | SHIMMER | MODE
 
         // Port label sits above port centre
         constexpr float kPortLabelAbove = 5.84f;
 
-        // ── Row 1: PREDELAY / SIZE ──
-        addChild(aeLabel(Vec(kCol1, kRow1 - kLabelAbove), "PREDELAY", 7.5f, labelCol));
-        addChild(aeLabel(Vec(kCol2, kRow1 - kLabelAbove), "SIZE", 7.5f, labelCol));
+        // ── Row 1: PREDELAY | DIFFUSION | SIZE ──
+        addChild(aeLabel(Vec(kCol1,   kRow1 - kLabelAbove), "PREDELAY",  7.5f, labelCol));
+        addChild(aeLabel(Vec(kCentre, kRow1 - kLabelAbove), "DIFFUSION", 7.5f, labelCol));
+        addChild(aeLabel(Vec(kCol3,   kRow1 - kLabelAbove), "SIZE",      7.5f, labelCol));
         addParam(createParamCentered<MVXKnob_wh>(
-            mm2px(Vec(kCol1, kRow1)), module, Aetherion::PREDELAY_PARAM));
+            mm2px(Vec(kCol1,   kRow1)), module, Aetherion::PREDELAY_PARAM));
         addParam(createParamCentered<MVXKnob_wh>(
-            mm2px(Vec(kCol2, kRow1)), module, Aetherion::SIZE_PARAM));
+            mm2px(Vec(kCentre, kRow1)), module, Aetherion::DIFFUSION_PARAM));
+        addParam(createParamCentered<MVXKnob_wh>(
+            mm2px(Vec(kCol3,   kRow1)), module, Aetherion::SIZE_PARAM));
 
-        // ── Row 2: DECAY / HI DAMP ──
-        addChild(aeLabel(Vec(kCol1, kRow2 - kLabelAbove), "DECAY", 7.5f, labelCol));
-        addChild(aeLabel(Vec(kCol2, kRow2 - kLabelAbove), "HI DAMP", 7.5f, labelCol));
+        // ── Row 2: DECAY | MOD | HI DAMP ──
+        addChild(aeLabel(Vec(kCol1,   kRow2 - kLabelAbove), "DECAY",   7.5f, labelCol));
+        addChild(aeLabel(Vec(kCentre, kRow2 - kLabelAbove), "MOD",     7.5f, labelCol));
+        addChild(aeLabel(Vec(kCol3,   kRow2 - kLabelAbove), "HI DAMP", 7.5f, labelCol));
         addParam(createParamCentered<MVXKnob_wh>(
-            mm2px(Vec(kCol1, kRow2)), module, Aetherion::DECAY_PARAM));
+            mm2px(Vec(kCol1,   kRow2)), module, Aetherion::DECAY_PARAM));
         addParam(createParamCentered<MVXKnob_wh>(
-            mm2px(Vec(kCol2, kRow2)), module, Aetherion::HI_DAMP_PARAM));
+            mm2px(Vec(kCentre, kRow2)), module, Aetherion::MOD_PARAM));
+        addParam(createParamCentered<MVXKnob_wh>(
+            mm2px(Vec(kCol3,   kRow2)), module, Aetherion::HI_DAMP_PARAM));
 
-        // ── Row 3: LO DAMP / LO-FI ──
-        addChild(aeLabel(Vec(kCol1, kRow3 - kLabelAbove), "LO DAMP", 7.5f, labelCol));
-        addChild(aeLabel(Vec(kCol2, kRow3 - kLabelAbove), "LO-FI", 7.5f, labelCol));
+        // ── Row 3: LO DAMP | TILT | LO-FI ──
+        addChild(aeLabel(Vec(kCol1,   kRow3 - kLabelAbove), "LO DAMP", 7.5f, labelCol));
+        addChild(aeLabel(Vec(kCentre, kRow3 - kLabelAbove), "TILT",    7.5f, labelCol));
+        addChild(aeLabel(Vec(kCol3,   kRow3 - kLabelAbove), "LO-FI",   7.5f, labelCol));
         addParam(createParamCentered<MVXKnob_wh>(
-            mm2px(Vec(kCol1, kRow3)), module, Aetherion::LO_DAMP_PARAM));
+            mm2px(Vec(kCol1,   kRow3)), module, Aetherion::LO_DAMP_PARAM));
         addParam(createParamCentered<MVXKnob_wh>(
-            mm2px(Vec(kCol2, kRow3)), module, Aetherion::LOFI_PARAM));
+            mm2px(Vec(kCentre, kRow3)), module, Aetherion::TILT_PARAM));
+        addParam(createParamCentered<MVXKnob_wh>(
+            mm2px(Vec(kCol3,   kRow3)), module, Aetherion::LOFI_PARAM));
 
-        // ── Row 4: MIX / MODE ──
-        addChild(aeLabel(Vec(kCol1, kRow4 - kLabelAbove), "MIX", 7.5f, labelCol));
-        addChild(aeLabel(Vec(kCol2, kRow4 - kLabelAbove - 0.66f), "MODE", 7.5f, modeCol));
+        // ── Row 4: MIX | SHIMMER toggle | MODE switch ──
+        addChild(aeLabel(Vec(kCol1,   kRow4 - kLabelAbove),        "MIX",     7.5f, labelCol));
+        addChild(aeLabel(Vec(kCentre, kRow4 - 5.34f),              "SHIMMER", 5.5f, labelCol));
+        addChild(aeLabel(Vec(kCol3,   kRow4 - kLabelAbove - 0.66f),"MODE",    7.5f, modeCol));
         addParam(createParamCentered<MVXKnob_wh>(
-            mm2px(Vec(kCol1, kRow4)), module, Aetherion::MIX_PARAM));
-        // MODE: 3-position switch
-        addParam(createParamCentered<CKSSThree>(
-            mm2px(Vec(kCol2, kRow4)), module, Aetherion::MODE_PARAM));
-        // SHIMMER toggle — centred between MIX and MODE at the same row.
-        NVGcolor shimCol = nvgRGB(0xff, 0xff, 0xff);  // white
-        addChild(aeLabel(Vec(kCentre, kRow4 - 5.34f), "SHIMMER", 5.5f, shimCol));
+            mm2px(Vec(kCol1,   kRow4)), module, Aetherion::MIX_PARAM));
         addParam(createParamCentered<CKSS>(
             mm2px(Vec(kCentre, kRow4)), module, Aetherion::SHIMMER_PARAM));
+        addParam(createParamCentered<CKSSThree>(
+            mm2px(Vec(kCol3,   kRow4)), module, Aetherion::MODE_PARAM));
 
         // ── Ports ──
-        // Evenly spaced across panel: 4 ports in 50.8 mm
-        constexpr float kPortSpacing = kPanelW / 5.f;  // ~10.16 mm
-        constexpr float kPort1 = kPortSpacing;          // 10.16
-        constexpr float kPort2 = kPortSpacing * 2.f;    // 20.32
-        constexpr float kPort3 = kPortSpacing * 3.f;    // 30.48
-        constexpr float kPort4 = kPortSpacing * 4.f;    // 40.64
+        // 4 evenly-spaced across 12 HP: spacing = kPanelW / 5
+        constexpr float kPortSpacing = kPanelW / 5.f;  // ~12.19 mm
+        constexpr float kPortRow     = 121.0f;
+        constexpr float kPort1 = kPortSpacing;          // ~12.19
+        constexpr float kPort2 = kPortSpacing * 2.f;    // ~24.38
+        constexpr float kPort3 = kPortSpacing * 3.f;    // ~36.58
+        constexpr float kPort4 = kPortSpacing * 4.f;    // ~48.77
 
-        // Port labels
-        addChild(aeLabel(Vec(kPort1, kPortRow - kPortLabelAbove), "IN L", 5.5f, portCol));
-        addChild(aeLabel(Vec(kPort2, kPortRow - kPortLabelAbove), "IN R", 5.5f, portCol));
+        addChild(aeLabel(Vec(kPort1, kPortRow - kPortLabelAbove), "IN L",  5.5f, portCol));
+        addChild(aeLabel(Vec(kPort2, kPortRow - kPortLabelAbove), "IN R",  5.5f, portCol));
         addChild(aeLabel(Vec(kPort3, kPortRow - kPortLabelAbove), "OUT L", 5.5f, portCol));
         addChild(aeLabel(Vec(kPort4, kPortRow - kPortLabelAbove), "OUT R", 5.5f, portCol));
-
-        // Port widgets
         addInput(createInputCentered<MVXport_s1>(
             mm2px(Vec(kPort1, kPortRow)), module, Aetherion::IN_L_INPUT));
         addInput(createInputCentered<MVXport_s1>(
@@ -661,49 +801,66 @@ struct AetherionWidget : ModuleWidget {
         addOutput(createOutputCentered<MVXport_s1_red>(
             mm2px(Vec(kPort4, kPortRow)), module, Aetherion::OUT_R_OUTPUT));
 
-        // ── SWELL section (83–91 mm) ──
-        // 4-element row: FREEZE button | RISE trim | SWELL OUT | FALL trim
-        // Aligned with the port columns for visual consistency.
-        constexpr float kSwellRow   = 94.05f;
-        constexpr float kSwellLabel = 86.05f;
-        constexpr float kSwellLabelAbove = 5.34f;  // 1px higher than 5.0
-        NVGcolor swellCol = nvgRGB(0xff, 0xff, 0xff);  // white
+        // ── SWELL section ──
+        constexpr float kSwellRow        = 79.0f + kKnobShift;
+        constexpr float kSwellLabel      = 72.0f + kKnobShift;
+        constexpr float kSwellLabelAbove = 5.34f;
+        NVGcolor swellCol = nvgRGB(0xff, 0xff, 0xff);
         addChild(aeLabel(Vec(kCentre, kSwellLabel), "SWELL", 6.5f, swellCol, false));
-        // FREEZE button + LED
+
         addChild(aeLabel(Vec(kPort1, kSwellRow - kSwellLabelAbove), "FREEZE", 5.5f, swellCol));
         addParam(createParamCentered<VCVButton>(
             mm2px(Vec(kPort1, kSwellRow)), module, Aetherion::FREEZE_BTN_PARAM));
         addChild(createLightCentered<TinyLight<GreenLight>>(
             mm2px(Vec(kPort1 + 3.5f, kSwellRow - 3.5f)), module, Aetherion::FREEZE_LIGHT));
-        // RISE trim
+
         addChild(aeLabel(Vec(kPort2, kSwellRow - kSwellLabelAbove), "RISE", 5.5f, swellCol));
         addParam(createParamCentered<Trimpot>(
             mm2px(Vec(kPort2, kSwellRow)), module, Aetherion::SWELL_RISE_PARAM));
-        // SWELL OUT port
+
         addChild(aeLabel(Vec(kPort3, kSwellRow - kSwellLabelAbove), "OUT", 5.5f, swellCol));
         addOutput(createOutputCentered<MVXport_s1_red>(
             mm2px(Vec(kPort3, kSwellRow)), module, Aetherion::SWELL_OUT_OUTPUT));
-        // FALL trim
+
         addChild(aeLabel(Vec(kPort4, kSwellRow - kSwellLabelAbove), "FALL", 5.5f, swellCol));
         addParam(createParamCentered<Trimpot>(
             mm2px(Vec(kPort4, kSwellRow)), module, Aetherion::SWELL_FALL_PARAM));
 
-        // ── CV row: FRZ GATE / DCY CV / SZ CV / LFO CV (4 ports) ──
-        // Aligned with the I/O port row below for even spacing.
-        constexpr float kCvRowAdj = kCvRow + 5.42f;  // shifted down 9px + previous 7px
-        constexpr float kCvLabelAbove = 5.34f;  // 1px higher than 5.0
-        addChild(aeLabel(Vec(kPort1, kCvRowAdj - kCvLabelAbove), "FRZ G",  5.5f, portCol));
-        addChild(aeLabel(Vec(kPort2, kCvRowAdj - kCvLabelAbove), "DCY CV", 5.5f, portCol));
-        addChild(aeLabel(Vec(kPort3, kCvRowAdj - kCvLabelAbove), "SZ CV",  5.5f, portCol));
-        addChild(aeLabel(Vec(kPort4, kCvRowAdj - kCvLabelAbove), "LFO CV", 5.5f, portCol));
+        // ── CV row A (7 ports: FRZ|DCY|SZ|LOFI|DIFF|TILT|MOD) ──
+        // 7 ports in 60.96mm using kPanelW/8 spacing (~7.62mm each).
+        constexpr float kCvSpacing = kPanelW / 8.f;  // ~7.62 mm
+        constexpr float kCvRow     = 109.0f;
+        constexpr float kCvLabelAbove = 5.34f;
+        constexpr float kCv1 = kCvSpacing;           // ~7.62
+        constexpr float kCv2 = kCvSpacing * 2.f;     // ~15.24
+        constexpr float kCv3 = kCvSpacing * 3.f;     // ~22.86
+        constexpr float kCv4 = kCvSpacing * 4.f;     // ~30.48
+        constexpr float kCv5 = kCvSpacing * 5.f;     // ~38.1
+        constexpr float kCv6 = kCvSpacing * 6.f;     // ~45.72
+        constexpr float kCv7 = kCvSpacing * 7.f;     // ~53.34
+
+        addChild(aeLabel(Vec(kCv1, kCvRow - kCvLabelAbove), "FRZ",  4.5f, portCol));
+        addChild(aeLabel(Vec(kCv2, kCvRow - kCvLabelAbove), "DCY",  4.5f, portCol));
+        addChild(aeLabel(Vec(kCv3, kCvRow - kCvLabelAbove), "SZ",   4.5f, portCol));
+        addChild(aeLabel(Vec(kCv4, kCvRow - kCvLabelAbove), "LFI",  4.5f, portCol));
+        addChild(aeLabel(Vec(kCv5, kCvRow - kCvLabelAbove), "DIF",  4.5f, portCol));
+        addChild(aeLabel(Vec(kCv6, kCvRow - kCvLabelAbove), "TLT",  4.5f, portCol));
+        addChild(aeLabel(Vec(kCv7, kCvRow - kCvLabelAbove), "MOD",  4.5f, portCol));
+
         addInput(createInputCentered<MVXport_s1>(
-            mm2px(Vec(kPort1, kCvRowAdj)), module, Aetherion::FREEZE_GATE_INPUT));
+            mm2px(Vec(kCv1, kCvRow)), module, Aetherion::FREEZE_GATE_INPUT));
         addInput(createInputCentered<MVXport_s1>(
-            mm2px(Vec(kPort2, kCvRowAdj)), module, Aetherion::DECAY_CV_INPUT));
+            mm2px(Vec(kCv2, kCvRow)), module, Aetherion::DECAY_CV_INPUT));
         addInput(createInputCentered<MVXport_s1>(
-            mm2px(Vec(kPort3, kCvRowAdj)), module, Aetherion::SIZE_CV_INPUT));
+            mm2px(Vec(kCv3, kCvRow)), module, Aetherion::SIZE_CV_INPUT));
         addInput(createInputCentered<MVXport_s1>(
-            mm2px(Vec(kPort4, kCvRowAdj)), module, Aetherion::LOFI_CV_INPUT));
+            mm2px(Vec(kCv4, kCvRow)), module, Aetherion::LOFI_CV_INPUT));
+        addInput(createInputCentered<MVXport_s1>(
+            mm2px(Vec(kCv5, kCvRow)), module, Aetherion::DIFF_CV_INPUT));
+        addInput(createInputCentered<MVXport_s1>(
+            mm2px(Vec(kCv6, kCvRow)), module, Aetherion::TILT_CV_INPUT));
+        addInput(createInputCentered<MVXport_s1>(
+            mm2px(Vec(kCv7, kCvRow)), module, Aetherion::MOD_CV_INPUT));
     }
 };
 
@@ -714,50 +871,73 @@ struct AetherionWidget : ModuleWidget {
         setModule(module);
         setPanel(createPanel(asset::plugin(pluginInstance, "res/Aetherion.png")));
 
+        // Matches kKnobShift in the VCV build: 20 px down = 20 × 25.4/75 mm.
+        // MetaModule uses widget positions for hardware knob/CV-input mapping.
+        constexpr float kKnobShift = 20.f * 25.4f / 75.f;
+
+        // Row 1: PREDELAY | DIFFUSION | SIZE
         addParam(createParamCentered<RoundSmallBlackKnob>(
-            mm2px(Vec(12.7f, 22.f)), module, Aetherion::PREDELAY_PARAM));
+            mm2px(Vec(10.16f, 20.f + kKnobShift)), module, Aetherion::PREDELAY_PARAM));
         addParam(createParamCentered<RoundSmallBlackKnob>(
-            mm2px(Vec(38.1f, 22.f)), module, Aetherion::SIZE_PARAM));
+            mm2px(Vec(25.4f,  20.f + kKnobShift)), module, Aetherion::DIFFUSION_PARAM));
         addParam(createParamCentered<RoundSmallBlackKnob>(
-            mm2px(Vec(12.7f, 38.f)), module, Aetherion::DECAY_PARAM));
+            mm2px(Vec(40.64f, 20.f + kKnobShift)), module, Aetherion::SIZE_PARAM));
+        // Row 2: DECAY | MOD | HI DAMP
         addParam(createParamCentered<RoundSmallBlackKnob>(
-            mm2px(Vec(38.1f, 38.f)), module, Aetherion::HI_DAMP_PARAM));
+            mm2px(Vec(10.16f, 35.f + kKnobShift)), module, Aetherion::DECAY_PARAM));
         addParam(createParamCentered<RoundSmallBlackKnob>(
-            mm2px(Vec(12.7f, 54.f)), module, Aetherion::LO_DAMP_PARAM));
+            mm2px(Vec(25.4f,  35.f + kKnobShift)), module, Aetherion::MOD_PARAM));
         addParam(createParamCentered<RoundSmallBlackKnob>(
-            mm2px(Vec(38.1f, 54.f)), module, Aetherion::LOFI_PARAM));
+            mm2px(Vec(40.64f, 35.f + kKnobShift)), module, Aetherion::HI_DAMP_PARAM));
+        // Row 3: LO DAMP | TILT | LO-FI
         addParam(createParamCentered<RoundSmallBlackKnob>(
-            mm2px(Vec(12.7f, 70.f)), module, Aetherion::MIX_PARAM));
-        addParam(createParamCentered<CKSSThree>(
-            mm2px(Vec(38.1f, 70.f)), module, Aetherion::MODE_PARAM));
+            mm2px(Vec(10.16f, 50.f + kKnobShift)), module, Aetherion::LO_DAMP_PARAM));
+        addParam(createParamCentered<RoundSmallBlackKnob>(
+            mm2px(Vec(25.4f,  50.f + kKnobShift)), module, Aetherion::TILT_PARAM));
+        addParam(createParamCentered<RoundSmallBlackKnob>(
+            mm2px(Vec(40.64f, 50.f + kKnobShift)), module, Aetherion::LOFI_PARAM));
+        // Row 4: MIX | SHIMMER | MODE
+        addParam(createParamCentered<RoundSmallBlackKnob>(
+            mm2px(Vec(10.16f, 65.f + kKnobShift)), module, Aetherion::MIX_PARAM));
         addParam(createParamCentered<CKSS>(
-            mm2px(Vec(25.4f, 70.f)), module, Aetherion::SHIMMER_PARAM));
-
-        addParam(createParamCentered<Trimpot>(
-            mm2px(Vec(12.7f, 79.f)), module, Aetherion::SWELL_RISE_PARAM));
-        addParam(createParamCentered<Trimpot>(
-            mm2px(Vec(38.1f, 79.f)), module, Aetherion::SWELL_FALL_PARAM));
+            mm2px(Vec(25.4f,  65.f + kKnobShift)), module, Aetherion::SHIMMER_PARAM));
+        addParam(createParamCentered<CKSSThree>(
+            mm2px(Vec(40.64f, 65.f + kKnobShift)), module, Aetherion::MODE_PARAM));
+        // SWELL
         addParam(createParamCentered<VCVButton>(
-            mm2px(Vec(8.0f,  79.f)), module, Aetherion::FREEZE_BTN_PARAM));
+            mm2px(Vec(10.16f, 79.f + kKnobShift)), module, Aetherion::FREEZE_BTN_PARAM));
+        addParam(createParamCentered<Trimpot>(
+            mm2px(Vec(22.86f, 79.f + kKnobShift)), module, Aetherion::SWELL_RISE_PARAM));
+        addParam(createParamCentered<Trimpot>(
+            mm2px(Vec(40.64f, 79.f + kKnobShift)), module, Aetherion::SWELL_FALL_PARAM));
 
+        // CV row (unchanged — not shifted)
         addInput(createInputCentered<PJ301MPort>(
-            mm2px(Vec(10.f,  113.08f)), module, Aetherion::IN_L_INPUT));
+            mm2px(Vec(7.62f,  109.f)), module, Aetherion::FREEZE_GATE_INPUT));
         addInput(createInputCentered<PJ301MPort>(
-            mm2px(Vec(20.f,  113.08f)), module, Aetherion::IN_R_INPUT));
+            mm2px(Vec(15.24f, 109.f)), module, Aetherion::DECAY_CV_INPUT));
         addInput(createInputCentered<PJ301MPort>(
-            mm2px(Vec(8.0f,   92.08f)), module, Aetherion::FREEZE_GATE_INPUT));
+            mm2px(Vec(22.86f, 109.f)), module, Aetherion::SIZE_CV_INPUT));
         addInput(createInputCentered<PJ301MPort>(
-            mm2px(Vec(19.0f,  92.08f)), module, Aetherion::DECAY_CV_INPUT));
+            mm2px(Vec(30.48f, 109.f)), module, Aetherion::LOFI_CV_INPUT));
         addInput(createInputCentered<PJ301MPort>(
-            mm2px(Vec(30.0f,  92.08f)), module, Aetherion::SIZE_CV_INPUT));
+            mm2px(Vec(38.1f,  109.f)), module, Aetherion::DIFF_CV_INPUT));
         addInput(createInputCentered<PJ301MPort>(
-            mm2px(Vec(41.0f,  92.08f)), module, Aetherion::LOFI_CV_INPUT));
+            mm2px(Vec(45.72f, 109.f)), module, Aetherion::TILT_CV_INPUT));
+        addInput(createInputCentered<PJ301MPort>(
+            mm2px(Vec(53.34f, 109.f)), module, Aetherion::MOD_CV_INPUT));
+        // Outputs
         addOutput(createOutputCentered<PJ301MPort>(
-            mm2px(Vec(25.4f,  84.08f)), module, Aetherion::SWELL_OUT_OUTPUT));
+            mm2px(Vec(30.48f, 79.f + kKnobShift)), module, Aetherion::SWELL_OUT_OUTPUT));
         addOutput(createOutputCentered<PJ301MPort>(
-            mm2px(Vec(31.f,  113.08f)), module, Aetherion::OUT_L_OUTPUT));
+            mm2px(Vec(36.58f, 121.f)), module, Aetherion::OUT_L_OUTPUT));
         addOutput(createOutputCentered<PJ301MPort>(
-            mm2px(Vec(41.f,  113.08f)), module, Aetherion::OUT_R_OUTPUT));
+            mm2px(Vec(48.77f, 121.f)), module, Aetherion::OUT_R_OUTPUT));
+        // Audio inputs (unchanged)
+        addInput(createInputCentered<PJ301MPort>(
+            mm2px(Vec(12.19f, 121.f)), module, Aetherion::IN_L_INPUT));
+        addInput(createInputCentered<PJ301MPort>(
+            mm2px(Vec(24.38f, 121.f)), module, Aetherion::IN_R_INPUT));
     }
 };
 

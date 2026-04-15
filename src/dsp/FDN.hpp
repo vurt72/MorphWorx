@@ -100,9 +100,10 @@ public:
     void setFreeze(bool active) { frozen_ = active; }
 
     // Per-sample processing.
-    // lofiDepth in [0,1]: controls WowFlutter pitch modulation depth.
+    // lofiDepth in [0,1]: controls lo-fi saturation depth (used by module).
+    // modDepth  in [0,1]: controls WowFlutter pitch modulation depth.
     void process(float inL, float inR, float* outL, float* outR,
-                 float lofiDepth) {
+                 float lofiDepth, float modDepth) {
 
         // --- Control-rate housekeeping ---
         if (++controlCounter_ >= kControlRate) {
@@ -118,7 +119,7 @@ public:
         float lineOut[kNumLines];
 
         for (int i = 0; i < kNumLines; i++) {
-            float wfOffset = wf_[i].process(lofiDepth);
+            float wfOffset = wf_[i].process(modDepth);
 
             // Fractional read position.
             // Double-add wrap: wow amplitude (up to 350 samples) can push
