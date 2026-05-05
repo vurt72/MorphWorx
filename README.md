@@ -10,12 +10,14 @@ VCV Rack 2 and 4ms MetaModule plugin.
 - **[Amenolith Manual](docs/amenolith-manual.md)** — Sample-based drum machine
 - **[FerroKlast Manual](docs/ferroklast-manual.md)** — Analog-modelled drum synthesizer
 - **[Glitch Please Manual](docs/glitchplease-manual.md)** — IDUM-derived gate and clock mangler with loop capture
+- **[Kinetrax Manual](docs/kinetrax-manual.md)** — Eight-zone comparator with transition bursts and secondary span warping
 - **[Minimalith Manual](docs/minimalith-manual.md)** — PreenFM2-based FM synthesizer voice
 - **[Phaseon1 Manual](docs/phaseon1-manual.md)** — Phase-modulation wavetable synthesizer
 - **[Septagon Manual](docs/septagon-manual.md)** — Generative polyrhythmic drum pattern generator
 - **[SlideWyrm Manual](docs/slidewyrm-manual.md)** — Generative TB-303 style acid sequencer
 - **[Trigonomicon Manual](docs/trigonomicon-manual.md)** — Pattern generator with mutate function
 - **[Xenostasis Manual](docs/xenostasis-manual.md)** — Autonomous hybrid synthesis organism
+- **[XORnado Manual](docs/xornado-manual.md)** — Bytebeat and digital-noise voice with equation morphing
 
 ## Modules
 
@@ -61,6 +63,16 @@ MetaModule-focused FerroKlast variant with a reduced voice set and trimmed featu
 IDUM-derived gate and clock processor based on Eli Pechman and Mystic Circuits firmware. Applies probabilistic timing and trigger modifications, loop capture, merge policies, and ghost-note timing to an incoming clock and four trigger lanes.
 
 📖 **[Full Manual](docs/glitchplease-manual.md)**
+
+### Kinetrax
+Eight-zone comparator network with state outputs marking which zone a signal occupies and transition pulses for boundary crossings. Secondary Span 2 input warps zone boundaries for rhythmic variation, with optional clock-synced sampling and three CV output modes.
+
+📖 **[Full Manual](docs/kinetrax-manual.md)**
+
+### XORnado
+Compact bytebeat and digital-noise voice with 24 equations, smooth equation morphing, external clock reset or step control, PM/FM mutation, and mono plus adjacent-equation stereo outputs.
+
+📖 **[Full Manual](docs/xornado-manual.md)**
 
 ## Official Release Set
 

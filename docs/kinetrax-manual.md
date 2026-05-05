@@ -8,8 +8,9 @@ This version also adds a secondary **Span 2** input that can bend the boundary b
 
 - **SPAN** adds manual offset to the internal channel-index signal. With no cable patched, it can manually scan the eight channels.
 - **ATTN** is a bipolar attenuverter for the incoming Span CV, matching the GTE-style patching model more closely.
-- **SPACE** sets the total voltage range required for Span to traverse all eight channels. Lower values make Kinetrax much more reactive.
+- **SPACE** sets the total voltage range required for Span to traverse all eight channels. The control is applied nonlinearly, so lower values make Kinetrax much more reactive while the top of the range gives coarser, broader movement.
 - **WARP** sets how strongly **Span 2** perturbs channel-boundary crossings.
+- **CV MODE** selects the derived CV output: stepped channel index, slewed channel index, or transition-density envelope.
 
 ## Inputs
 
@@ -30,19 +31,20 @@ This version also adds a secondary **Span 2** input that can bend the boundary b
 ## CV Modes
 
 - **INDEX** outputs the current channel position as a stepped control voltage.
-- **SLEW** outputs a smoothed version of the channel index for gentler filter or timbre modulation.
-- **FLUX** outputs a decaying envelope that rises with transition activity and falls back between bursts.
+- **SLEW** outputs a smoothed version of the channel index for gentler filter or timbre modulation, with a roughly 30 ms time constant.
+- **FLUX** outputs a decaying envelope that rises by about +2.5 V per transition event and then falls back with a roughly 280 ms time constant between bursts.
 
 ## Behavior Notes
 
 - The active channel range starts from the Span low end and expands upward according to **SPACE**, which is closer to the documented GTE behavior than the previous centered mapping.
+- Internally, **SPACE** is squared before it scales the tracked voltage range. That gives finer control in the reactive low end and broader travel near the top of the knob.
 - With **SPAN** fully counterclockwise, **ATTN** fully clockwise, and **SPACE** fully clockwise, Kinetrax is shaped to behave more like a channel-index translator.
 - **Span 2** acts as a warp source. It has the strongest effect near channel boundaries and less effect in the middle of a channel, so the main Span gesture remains readable while rhythmic crossings become more varied.
 - The warped result affects the full final state engine, so **Zone 1-8**, **Odd/Even**, and **TRANS** all respond to the interaction between **Span** and **Span 2**.
 - The three-position **CV MODE** switch selects whether the derived CV follows absolute channel position, a slewed position, or transition density.
 - A small internal hysteresis band reduces chatter at zone boundaries.
 - In clocked mode, large movements between clocks are preserved and turned into multi-pulse bursts on the next rising edge.
-- Transition pulses use a short GTE pulse, while serialized channel stepping uses 5 ms holds to approximate the documented FDD behavior.
+- Transition pulses are about 1 ms wide, while serialized channel stepping uses about 5 ms holds to approximate the documented FDD behavior.
 
 ## Polyphony
 

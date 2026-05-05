@@ -15,6 +15,7 @@ This folder is the canonical home for MorphWorx manuals and release notes.
 - [SlideWyrm Manual](slidewyrm-manual.md) — Generative TB-303 style acid sequencer
 - [Trigonomicon Manual](trigonomicon-manual.md) — Pattern generator with mutate function
 - [Xenostasis Manual](xenostasis-manual.md) — Autonomous hybrid synthesis organism
+- [XORnado Manual](xornado-manual.md) — Bytebeat and digital-noise voice with equation morphing
 
 ## Release Notes
 

@@ -207,7 +207,7 @@ struct XORnado : Module {
         uint32_t phase_acc  = 0;      // sub-sample accumulator for speed scaling
         uint16_t last_sample = 13;    // feedback register for equations 9,10,13,15
         bool     step_mode = false;  // true = clock steps t; false = clock resets t
-        bool     bipolar   = false;  // output ±5V instead of 0–10V
+        bool     bipolar   = false;  // output roughly ±10V instead of 0–10V
         dsp::SchmittTrigger trigIn;
         dsp::PulseGenerator stepLight;
     };
@@ -654,7 +654,7 @@ struct XORnadoWidget : ModuleWidget {
         menu->addChild(new MenuSeparator);
         menu->addChild(createMenuLabel("Output Range"));
         menu->addChild(createCheckMenuItem(
-            "Bipolar ±5V", "",
+            "Bipolar ±10V", "",
             [m]() { return m->channels[0].bipolar; },
             [m]() { m->channels[0].bipolar = !m->channels[0].bipolar; }
         ));
