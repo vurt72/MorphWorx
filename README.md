@@ -113,7 +113,7 @@ See the [SPDX identifier in plugin.json](plugin.json) and <https://www.gnu.org/l
 ### Third-party code
 
 This plugin incorporates portions of code from third-party open-source projects. Full copyright notices and license texts are in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
-
+---
  ## Support
 
 Buy me coffee (if you liked something and would like to support me): https://buymeacoffee.com/vurt
