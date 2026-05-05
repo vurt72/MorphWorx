@@ -141,6 +141,45 @@ THE SOFTWARE.
 
 ---
 
+## Mystic Circuits IDUM Firmware (Glitch Please)
+
+`src/GlitchPlease.cpp` adapts behavior, timing ideas, and pattern content from
+**IDUM Firmware v.99** by **Eli Pechman / Mystic Circuits** for the MorphWorx
+module **Glitch Please**.
+
+The in-source notice carried with the adapted implementation states:
+
+- **Based on IDUM Firmware v.99 by Eli Pechman / Mystic Circuits**
+- **Released under Creative Commons Attribution-ShareAlike 4.0 International**
+- Original product reference: <https://www.mysticcircuits.com/product/idum>
+- License text: <https://creativecommons.org/licenses/by-sa/4.0/legalcode>
+
+MorphWorx uses and adapts that material under the same
+**CC BY-SA 4.0** terms.
+
+Attribution for the derivative module should therefore credit:
+
+- **Original work:** Eli Pechman / Mystic Circuits, IDUM Firmware v.99
+- **Derivative Rack / MetaModule port:** MorphWorx, Glitch Please
+
+Creative Commons Attribution-ShareAlike 4.0 International
+
+You are free to:
+
+- Share — copy and redistribute the material in any medium or format
+- Adapt — remix, transform, and build upon the material for any purpose, even commercially
+
+Under the following terms:
+
+- Attribution — You must give appropriate credit, provide a link to the license, and indicate if changes were made.
+- ShareAlike — If you remix, transform, or build upon the material, you must distribute your contributions under the same license as the original.
+- No additional restrictions — You may not apply legal terms or technological measures that legally restrict others from doing anything the license permits.
+
+The official license text controls. See:
+<https://creativecommons.org/licenses/by-sa/4.0/legalcode>
+
+---
+
 MorphWorx itself is licensed under the **GNU General Public License v3.0 or later**.
 See plugin.json for the SPDX identifier, and
 <https://www.gnu.org/licenses/gpl-3.0.html> for the full license text.

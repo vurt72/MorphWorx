@@ -40,6 +40,30 @@ include(${METAMODULE_SDK_DIR}/plugin.cmake)
 # --- Project ---
 project(MorphWorx LANGUAGES C CXX ASM)
 
+# If a previous MetaModule build already contains a curated set of faceplates,
+# reuse those exact rendered assets for the next package build.
+set(MORPHWORX_BUILT_FACEPLATE_DIR "${CMAKE_CURRENT_BINARY_DIR}/MorphWorx/res")
+if(EXISTS "${MORPHWORX_BUILT_FACEPLATE_DIR}")
+    file(GLOB MORPHWORX_BUILT_FACEPLATES
+        "${MORPHWORX_BUILT_FACEPLATE_DIR}/*.png"
+        "${MORPHWORX_BUILT_FACEPLATE_DIR}/*.svg"
+    )
+
+    if(MORPHWORX_BUILT_FACEPLATES)
+        file(MAKE_DIRECTORY "${CMAKE_CURRENT_LIST_DIR}/assets")
+        file(MAKE_DIRECTORY "${CMAKE_CURRENT_LIST_DIR}/assets/res")
+
+        foreach(_faceplate IN LISTS MORPHWORX_BUILT_FACEPLATES)
+            get_filename_component(_faceplate_name "${_faceplate}" NAME)
+            file(COPY "${_faceplate}" DESTINATION "${CMAKE_CURRENT_LIST_DIR}/assets")
+            file(COPY "${_faceplate}" DESTINATION "${CMAKE_CURRENT_LIST_DIR}/assets/res")
+        endforeach()
+
+        list(LENGTH MORPHWORX_BUILT_FACEPLATES MORPHWORX_BUILT_FACEPLATE_COUNT)
+        message(STATUS "Reusing ${MORPHWORX_BUILT_FACEPLATE_COUNT} faceplates from ${MORPHWORX_BUILT_FACEPLATE_DIR}")
+    endif()
+endif()
+
 # Keep the MetaModule project's notion of the MorphWorx version in sync with
 # the single authoritative definition in src/version.h and plugin.json.
 #
@@ -66,6 +90,9 @@ target_sources(MorphWorx PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/../src/SlideWyrm.cpp
     ${CMAKE_CURRENT_LIST_DIR}/../src/PhaseWarpedDrums.cpp
     ${CMAKE_CURRENT_LIST_DIR}/../src/Aetherion.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../src/Kinetrax.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../src/GlitchPlease.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../src/XORnado.cpp
     # Phaseon1: performance-first Phaseon variant for MetaModule
     ${CMAKE_CURRENT_LIST_DIR}/../src/Phaseon1.cpp
     ${CMAKE_CURRENT_LIST_DIR}/../src/phaseon/PhaseonOperator.cpp

@@ -13,6 +13,7 @@ Usage:
 Output: assets/trigonomicon.png, assets/SlideWyrm.png
 """
 
+import io
 import os
 import sys
 
@@ -22,6 +23,11 @@ except ImportError:
     print("ERROR: Pillow is required. Install with: pip install Pillow")
     sys.exit(1)
 
+try:
+    import cairosvg
+except ImportError:
+    cairosvg = None
+
 # MetaModule faceplate dimensions
 MODULE_HEIGHT_MM = 128.5
 TRIG_WIDTH_MM = 50.8
@@ -29,6 +35,9 @@ SW_WIDTH_MM = 60.96
 AMEN_WIDTH_MM = 121.92  # 24HP
 PHASEON_WIDTH_MM = 101.6  # 20HP
 XENOSTASIS_WIDTH_MM = 81.28  # 16HP
+GLITCHPLEASE_WIDTH_MM = 60.96  # 12HP
+KINETRAX_WIDTH_MM = 71.12  # 14HP
+XORNADO_WIDTH_MM = 30.48  # 6HP
 HEIGHT = 240
 PX_PER_MM = HEIGHT / MODULE_HEIGHT_MM  # ~1.8677
 TRIG_WIDTH = int(TRIG_WIDTH_MM * PX_PER_MM)  # ~95 px
@@ -36,6 +45,9 @@ SW_WIDTH = int(SW_WIDTH_MM * PX_PER_MM)  # ~114 px
 AMEN_WIDTH = int(AMEN_WIDTH_MM * PX_PER_MM)  # ~228 px
 PHASEON_WIDTH = int(PHASEON_WIDTH_MM * PX_PER_MM)  # ~189 px
 XENOSTASIS_WIDTH = int(XENOSTASIS_WIDTH_MM * PX_PER_MM)  # ~152 px
+GLITCHPLEASE_WIDTH = int(GLITCHPLEASE_WIDTH_MM * PX_PER_MM)  # ~114 px
+KINETRAX_WIDTH = int(KINETRAX_WIDTH_MM * PX_PER_MM)  # ~132 px
+XORNADO_WIDTH = int(XORNADO_WIDTH_MM * PX_PER_MM)  # ~56 px
 
 # Colors
 BG_COLOR = (0x2a, 0x2b, 0x48)
@@ -86,6 +98,62 @@ def draw_border(draw, width, lines_y=None):
         line_x2 = width - mm(4)
         for y in lines_y:
             draw.line([line_x1, mm(y), line_x2, mm(y)], fill=NEON_GREEN, width=1)
+
+
+def save_dual_faceplate(img, out_dir, root_name, res_name=None):
+    res_dir = os.path.join(out_dir, 'res')
+    os.makedirs(res_dir, exist_ok=True)
+
+    if res_name is None:
+        res_name = root_name
+
+    out_path_res = os.path.join(res_dir, res_name)
+    out_path_root = os.path.join(out_dir, root_name)
+    img.save(out_path_res)
+    img.save(out_path_root)
+    return out_path_res, out_path_root
+
+
+def fit_image_to_faceplate(img, target_width):
+    scaled_width = max(1, int(round(img.width * HEIGHT / img.height)))
+    resized = img.resize((scaled_width, HEIGHT), Image.LANCZOS)
+
+    if scaled_width == target_width:
+        return resized
+
+    if scaled_width > target_width:
+        left = max(0, (scaled_width - target_width) // 2)
+        return resized.crop((left, 0, left + target_width, HEIGHT))
+
+    canvas = Image.new('RGBA', (target_width, HEIGHT), (0, 0, 0, 0))
+    left = max(0, (target_width - scaled_width) // 2)
+    canvas.paste(resized, (left, 0), resized)
+    return canvas
+
+
+def resize_png_faceplate(source_path, target_width):
+    img = Image.open(source_path).convert('RGBA')
+    return fit_image_to_faceplate(img, target_width)
+
+
+def stage_source_faceplate(out_dir, source_filename, target_width, root_name, res_name=None):
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    source_path = os.path.join(base_dir, '..', 'res', source_filename)
+    img = resize_png_faceplate(source_path, target_width)
+    out_path_res, _ = save_dual_faceplate(img, out_dir, root_name, res_name)
+    print(f"{root_name} faceplate staged from {source_filename}: {out_path_res} ({target_width}x{HEIGHT})")
+
+
+def rasterize_svg_faceplate(source_path, target_width):
+    if cairosvg is None:
+        raise RuntimeError('CairoSVG is required to rasterize SVG faceplates.')
+
+    png_bytes = cairosvg.svg2png(
+        url=source_path,
+        output_width=target_width,
+        output_height=HEIGHT,
+    )
+    return Image.open(io.BytesIO(png_bytes)).convert('RGBA')
 
 
 def generate_trigonomicon(fonts, out_dir):
@@ -522,6 +590,30 @@ def generate_xenostasis(fonts, out_dir):
     print(f"Xenostasis faceplate saved: {out_path_res} ({XENOSTASIS_WIDTH}x{HEIGHT})")
 
 
+def generate_glitchplease(out_dir):
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    source_path = os.path.join(base_dir, '..', 'res', 'GP_MM.png')
+    img = resize_png_faceplate(source_path, GLITCHPLEASE_WIDTH)
+    out_path_res, _ = save_dual_faceplate(img, out_dir, 'GlitchPlease.png')
+    print(f"GlitchPlease faceplate saved: {out_path_res} ({GLITCHPLEASE_WIDTH}x{HEIGHT})")
+
+
+def generate_kinetrax(out_dir):
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    source_path = os.path.join(base_dir, '..', 'res', 'Kinetrax.svg')
+    img = rasterize_svg_faceplate(source_path, KINETRAX_WIDTH)
+    out_path_res, _ = save_dual_faceplate(img, out_dir, 'Kinetrax.png')
+    print(f"Kinetrax faceplate saved: {out_path_res} ({KINETRAX_WIDTH}x{HEIGHT})")
+
+
+def generate_xornado(out_dir):
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    source_path = os.path.join(base_dir, '..', 'res', 'XORnado.svg')
+    img = rasterize_svg_faceplate(source_path, XORNADO_WIDTH)
+    out_path_res, _ = save_dual_faceplate(img, out_dir, 'XORnado.png')
+    print(f"XORnado faceplate saved: {out_path_res} ({XORNADO_WIDTH}x{HEIGHT})")
+
+
 def generate_ferroklast_mm(fonts, out_dir):
     """
     FerroklastMM — 24HP MetaModule variant of Ferroklast.
@@ -651,6 +743,21 @@ if __name__ == '__main__':
     generate_amenolith(fonts, out_dir)
     generate_phaseon(fonts, out_dir)
     generate_xenostasis(fonts, out_dir)
+    generate_glitchplease(out_dir)
+    generate_kinetrax(out_dir)
+    generate_xornado(out_dir)
     generate_ferroklast_mm(fonts, out_dir)
 
-    print(f"\n✓ All faceplates generated. Resolution: {PX_PER_MM:.4f} px/mm")
+    # Preserve original panel art for modules that already have approved PNG designs.
+    stage_source_faceplate(out_dir, 'Aetherion-mm.png', 95, 'Aetherion.png')
+    stage_source_faceplate(out_dir, 'Amenolith.png', AMEN_WIDTH, 'Amenolith.png')
+    stage_source_faceplate(out_dir, 'Minimalith.png', 151, 'Minimalith.png')
+    stage_source_faceplate(out_dir, 'Phaseon1.png', PHASEON_WIDTH, 'Phaseon1.png')
+    stage_source_faceplate(out_dir, 'Phaseon1.png', PHASEON_WIDTH, 'Phaseon.png')
+    stage_source_faceplate(out_dir, 'Xenostasis.png', XENOSTASIS_WIDTH, 'Xenostasis.png')
+    stage_source_faceplate(out_dir, 'FerroklastMM.png', 227, 'FerroklastMM.png')
+    stage_source_faceplate(out_dir, 'trigonomicon.png', TRIG_WIDTH, 'Trigonomicon.png')
+    stage_source_faceplate(out_dir, 'Slidewyrm.png', SW_WIDTH, 'SlideWyrm.png')
+    stage_source_faceplate(out_dir, 'Septagon.png', 227, 'Septagon.png')
+
+    print(f"\nAll faceplates generated. Resolution: {PX_PER_MM:.4f} px/mm")

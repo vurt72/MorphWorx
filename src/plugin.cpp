@@ -18,6 +18,9 @@ void init(Plugin* p) {
 	p->addModel(modelPhaseon1);
 	p->addModel(modelXenostasis);
 	p->addModel(modelAetherion);
+	p->addModel(modelKinetrax);
+	p->addModel(modelGlitchPlease);
+	p->addModel(modelXORnado);
 
 #ifndef METAMODULE
 	p->addModel(modelFerroklast);

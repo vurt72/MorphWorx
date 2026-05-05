@@ -7,6 +7,8 @@ This folder is the canonical home for MorphWorx manuals and release notes.
 - [Aetherion Manual](aetherion-manual.md) — Reverb with lo-fi tape degradation, has a Shimmer mode
 - [Amenolith Manual](amenolith-manual.md) — Sample-based drum machine
 - [FerroKlast Manual](ferroklast-manual.md) — Analog-modelled drum synthesizer
+- [Glitch Please Manual](glitchplease-manual.md) — IDUM-derived gate and clock mangler
+- [Kinetrax Manual](kinetrax-manual.md) — Eight-zone comparator with transition burst extraction
 - [Minimalith Manual](minimalith-manual.md) — PreenFM2-based FM synthesizer voice
 - [Phaseon1 Manual](phaseon1-manual.md) — Phase-modulation wavetable synthesizer
 - [Septagon Manual](septagon-manual.md) — Generative polyrhythmic drum pattern generator
@@ -20,3 +22,5 @@ This folder is the canonical home for MorphWorx manuals and release notes.
 - [Release v2.1.0](release-v2.1.0.md)
 - [Release v2.1.1](release-v2.1.1.md)
 - [Release v2.1.2](release-v2.1.2.md)
+- [Release v2.1.3](release-v2.1.3.md)
+- [Release v2.1.4](release-v2.1.4.md)

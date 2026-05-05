@@ -25,6 +25,9 @@ extern Model* modelXenostasis;
 extern Model* modelFerroklast;
 extern Model* modelFerroklastMM;
 extern Model* modelAetherion;
+extern Model* modelKinetrax;
+extern Model* modelGlitchPlease;
+extern Model* modelXORnado;
 
 #ifndef METAMODULE
 struct MVXPort : app::PortWidget {
@@ -240,6 +243,20 @@ struct MVXKnob_wh : MVXKnob {
 	}
 };
 
+// Purple/pr variant of MVXKnob — used for the GlitchPlease mode knob.
+// Uses MVX_knob_pr.png (turning part) and MVX_knob_pr_bg.png (background).
+// Sized to match RoundLargeBlackKnob.
+struct MVXKnob_pr : MVXKnob {
+	MVXKnob_pr() {
+		bgPath = asset::plugin(pluginInstance, "res/knobs/MVX_knob_pr_bg.png");
+		fgPath = asset::plugin(pluginInstance, "res/knobs/MVX_knob_pr.png");
+		bgHandle = -1;
+		fgHandle = -1;
+		componentlibrary::RoundLargeBlackKnob ref;
+		box.size = ref.box.size.mult(1.32f);
+	}
+};
+
 // Silver output port variant.
 struct MVXport_silver : MVXPort {
 	MVXport_silver() {
@@ -264,6 +281,14 @@ struct MVXport_s1_red : MVXPort {
 	}
 };
 
+// Purple output port variant (s1 style).
+struct MVXport_s1_purple : MVXPort {
+	MVXport_s1_purple() {
+		imagePath = asset::plugin(pluginInstance, "res/ports/MVXport_s1_purple.png");
+		imageHandle = -1;
+	}
+};
+
 // Standard input port (s1 style).
 struct MVXport_s1 : MVXPort {
 	MVXport_s1() {
@@ -283,5 +308,6 @@ using MVXKnob_wh      = componentlibrary::RoundSmallBlackKnob;
 using MVXport_silver      = componentlibrary::PJ301MPort;
 using MVXport_silver_red  = componentlibrary::PJ301MPort;
 using MVXport_s1_red      = componentlibrary::PJ301MPort;
+using MVXport_s1_purple   = componentlibrary::PJ301MPort;
 using MVXport_s1          = componentlibrary::PJ301MPort;
 #endif

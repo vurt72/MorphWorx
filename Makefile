@@ -31,6 +31,13 @@ SOURCES += src/Xenostasis.cpp
 # Aetherion (stereo hall reverb with lo-fi feedback)
 SOURCES += src/Aetherion.cpp
 
+# Kinetrax (clock-optional zone comparator and transition extractor)
+SOURCES += src/Kinetrax.cpp
+
+# GlitchPlease (IDUM gate FX port)
+SOURCES += src/GlitchPlease.cpp
+SOURCES += src/XORnado.cpp
+
 # Minimalith (PreenFM2 engine port)
 SOURCES += src/Minimalith.cpp
 SOURCES += src/pfm/PfmEngine.cpp

@@ -9,6 +9,7 @@ VCV Rack 2 and 4ms MetaModule plugin.
 - **[Aetherion Manual](docs/aetherion-manual.md)** — Reverb with lo-fi tape degradation, has a Shimmer mode
 - **[Amenolith Manual](docs/amenolith-manual.md)** — Sample-based drum machine
 - **[FerroKlast Manual](docs/ferroklast-manual.md)** — Analog-modelled drum synthesizer
+- **[Glitch Please Manual](docs/glitchplease-manual.md)** — IDUM-derived gate and clock mangler with loop capture
 - **[Minimalith Manual](docs/minimalith-manual.md)** — PreenFM2-based FM synthesizer voice
 - **[Phaseon1 Manual](docs/phaseon1-manual.md)** — Phase-modulation wavetable synthesizer
 - **[Septagon Manual](docs/septagon-manual.md)** — Generative polyrhythmic drum pattern generator
@@ -56,6 +57,11 @@ Eight-lane hybrid FM percussion synth for kick, dual snares, hats, ride, clap, a
 ### FerroKlast MM
 MetaModule-focused FerroKlast variant with a reduced voice set and trimmed feature surface.
 
+### Glitch Please
+IDUM-derived gate and clock processor based on Eli Pechman and Mystic Circuits firmware. Applies probabilistic timing and trigger modifications, loop capture, merge policies, and ghost-note timing to an incoming clock and four trigger lanes.
+
+📖 **[Full Manual](docs/glitchplease-manual.md)**
+
 ## Official Release Set
 
 The official MorphWorx release tracks these Rack modules:
@@ -64,12 +70,15 @@ The official MorphWorx release tracks these Rack modules:
 - Amenolith
 - FerroKlast
 - FerroKlast MM
+- Glitch Please
+- Kinetrax
 - Minimalith
 - Phaseon1
 - Septagon
 - SlideWyrm
 - Trigonomicon
 - Xenostasis
+- XORnado
 
 The MetaModule build ships the same set except full FerroKlast, which is replaced by the MetaModule-specific FerroKlast MM.
 
@@ -110,3 +119,4 @@ This plugin incorporates portions of code from third-party open-source projects.
 | TIMBRE & COLOR macros (Phaseon1) | [Mutable Instruments Plaits](https://github.com/pichenettes/eurorack) — Copyright (c) 2021 Emilie Gillet. | MIT |
 | Quantizer scale tables (SlideWyrm) | [Mutable Instruments Braids](https://github.com/pichenettes/eurorack) / [Ornament & Crime](https://github.com/mxmxmx/O_C) | MIT |
 | PreenFM2 synth engine (Minimalith) | [PreenFM2](https://github.com/Ixox/preenfm2) — Xavier Hosxe | GPL-3.0 |
+| Glitch Please gate FX engine | IDUM Firmware v.99 — Eli Pechman / Mystic Circuits | CC BY-SA 4.0 |

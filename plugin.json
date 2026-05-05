@@ -1,7 +1,7 @@
 {
   "slug": "MorphWorx",
   "name": "MorphWorx",
-  "version": "2.1.3",
+  "version": "2.1.4",
   "license": "GPL-3.0-or-later",
   "brand": "MorphWorx",
   "description": "Generative drum sequencers, experimental synth voices, and FM percussion for VCV Rack and MetaModule.",
@@ -109,6 +109,35 @@
         "Reverb",
         "Effect",
         "Delay"
+      ]
+    },
+    {
+      "slug": "Kinetrax",
+      "name": "Kinetrax",
+      "description": "Clock-optional eight-zone comparator with state gates and transition bursts",
+      "tags": [
+        "Utility",
+        "Logic"
+      ]
+    },
+    {
+      "slug": "GlitchPlease",
+      "name": "Glitch Please",
+      "description": "IDUM-derived gate FX processor based on Eli Pechman and Mystic Circuits firmware, with 8 probabilistic modification modes, looper, and clock manipulation",
+      "tags": [
+        "Clock modulator",
+        "Effect",
+        "Random"
+      ]
+    },
+    {
+      "slug": "XORnado",
+      "name": "XORnado",
+      "description": "4-channel bytebeat / digital noise generator with 16 equations, per-channel CV over all parameters",
+      "tags": [
+        "Oscillator",
+        "Noise",
+        "Sequencer"
       ]
     }
   ]

@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="71.12mm" height="128.5mm" viewBox="0 0 71.12 128.5">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#19202b"/>
+      <stop offset="100%" stop-color="#090c12"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#7ef0c1"/>
+      <stop offset="100%" stop-color="#f5cf57"/>
+    </linearGradient>
+    <style>
+      .title { font-family: 'Rajdhani', sans-serif; font-size: 5px; font-weight: 700; letter-spacing: 1.2px; fill: #ffffff; stroke: #090c12; stroke-width: 0.18px; paint-order: stroke fill; }
+      .sub { font-family: 'Rajdhani', sans-serif; font-size: 2.2px; font-weight: 700; letter-spacing: 0.8px; fill: #ffffff; stroke: #090c12; stroke-width: 0.12px; paint-order: stroke fill; }
+      .tiny { font-family: 'Rajdhani', sans-serif; font-size: 2px; font-weight: 700; letter-spacing: 0.6px; fill: #ffffff; stroke: #090c12; stroke-width: 0.1px; paint-order: stroke fill; }
+      .zone { font-family: 'Rajdhani', sans-serif; font-size: 2.7px; font-weight: 700; letter-spacing: 0.55px; fill: #ffffff; stroke: #090c12; stroke-width: 0.12px; paint-order: stroke fill; }
+      .line { stroke: #2c3947; stroke-width: 0.45; fill: none; }
+      .box { fill: #111723; stroke: #344253; stroke-width: 0.5; rx: 2.2; }
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="71.12" height="128.5" rx="4" fill="url(#bg)"/>
+  <rect x="3.4" y="3.4" width="64.32" height="121.7" rx="3.2" fill="none" stroke="#425267" stroke-width="0.7"/>
+  <path d="M8 13.4 H63.12" stroke="url(#accent)" stroke-width="1.1" stroke-linecap="round"/>
+
+  <text x="35.56" y="10.8" text-anchor="middle" class="title" style="font-size:5.9px; letter-spacing:1.45px;">K I N E T R A X</text>
+  <text x="35.56" y="16.1" text-anchor="middle" class="tiny">8-ZONE STATE + TRANSITION NETWORK</text>
+
+  <text x="13.24" y="19.81" text-anchor="middle" class="sub">SPAN</text>
+  <text x="28.12" y="19.81" text-anchor="middle" class="sub">ATTN</text>
+  <text x="43.0" y="19.81" text-anchor="middle" class="sub">SPACE</text>
+  <text x="57.88" y="19.81" text-anchor="middle" class="sub">WARP</text>
+
+  <rect x="6.8" y="37.5" width="57.52" height="33.2" class="box"/>
+  <path d="M8.8 54.0 H62.32" class="line"/>
+  <text x="15.24" y="41.139" text-anchor="middle" class="tiny">SPAN IN</text>
+  <text x="35.56" y="41.139" text-anchor="middle" class="tiny">SPAN 2</text>
+  <text x="55.88" y="41.139" text-anchor="middle" class="tiny">CLOCK IN</text>
+  <path d="M15.24 50.0 V51.8 M35.56 50.0 V51.8 M55.88 50.0 V51.8" class="line"/>
+  <text x="20.44" y="55.939" text-anchor="middle" class="tiny">SPAN CV</text>
+  <text x="35.56" y="55.939" text-anchor="middle" class="tiny">ATTN CV</text>
+  <text x="50.68" y="55.939" text-anchor="middle" class="tiny">WARP CV</text>
+  <text x="62.2" y="55.939" text-anchor="middle" class="tiny">CV MODE</text>
+  <path d="M20.44 65.0 V66.8 M35.56 65.0 V66.8 M50.68 65.0 V66.8 M62.2 65.0 V66.8" class="line"/>
+
+  <rect x="6.8" y="72.0" width="57.52" height="47.0" class="box"/>
+  <path d="M8.8 89.2 H62.32" class="line"/>
+  <path d="M8.8 107.2 H62.32" class="line"/>
+  <path d="M50.9 72.9 V118.1" class="line"/>
+  <text x="12.8" y="72.878" text-anchor="middle" class="zone">ZONE 1</text>
+  <text x="27.04" y="72.878" text-anchor="middle" class="zone">ZONE 2</text>
+  <text x="44.08" y="72.878" text-anchor="middle" class="zone">ZONE 3</text>
+  <text x="58.32" y="72.878" text-anchor="middle" class="zone">ZONE 4</text>
+  <text x="12.8" y="86.878" text-anchor="middle" class="zone">ZONE 5</text>
+  <text x="27.04" y="86.878" text-anchor="middle" class="zone">ZONE 6</text>
+  <text x="44.08" y="86.878" text-anchor="middle" class="zone">ZONE 7</text>
+  <text x="58.32" y="86.878" text-anchor="middle" class="zone">ZONE 8</text>
+  <text x="12.8" y="107.216" text-anchor="middle" class="tiny">ODD</text>
+  <text x="27.04" y="107.216" text-anchor="middle" class="tiny">EVEN</text>
+  <text x="44.08" y="107.216" text-anchor="middle" class="tiny">TRANS</text>
+  <text x="58.32" y="107.216" text-anchor="middle" class="tiny">CV OUT</text>
+
+  <text x="35.56" y="126" text-anchor="middle" class="tiny">CLOCKED SAMPLE AND HOLD WHEN CLOCK IS PATCHED</text>
+</svg>
