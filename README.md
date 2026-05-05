@@ -21,35 +21,17 @@ VCV Rack 2 and 4ms MetaModule plugin.
 
 ## Modules
 
+Every currently shipped Rack module is listed below, with the matching manual or reference link attached to each entry.
+
 ### Aetherion
-Stereo hall reverb with lo-fi tape degradation in the feedback loop. 8-line FDN with Hadamard mixing, shimmer pitch shifting (octave + fifth), freeze, swell envelope follower, and three character modes (Clean, Warm, Degrade).
+Stereo hall reverb with lo-fi tape degradation in the feedback loop. 8-line FDN with Hadamard mixing, shimmer pitch shifting, freeze, swell envelope follower, and Clean, Warm, or Degrade character modes.
 
 📖 **[Full Manual](docs/aetherion-manual.md)**
 
-### Trigonomicon
-Generative drum trigger pattern generator. IDM, breakcore, amen-break, and drill-inspired rhythmic structures. Probability-weighted pattern mutation and clock-synced CV outputs.
-
-### SlideWyrm
-TB-303 style acid pattern generator with slide and accent handling.
-
-### Septagon
-Polyrhythmic drum pattern generator in 7/4. Phase-space warping, accent layers, and independent trigger densities per voice.
-
-### Minimalith
-Compact PreenFM2-based FM synth voice with bank loading and CV modulation.
-
 ### Amenolith
-Six-instrument layered drum sampler with 10 kits, 3-layer velocity/accent response, per-row round robin, and individual plus stereo mix outputs.
+Six-instrument layered drum sampler with 10 kits, 3-layer dynamics, per-row round robin, and individual plus stereo mix outputs.
 
 📖 **[Full Manual](docs/amenolith-manual.md)**
-
-### Phaseon1
-4-operator phase modulation (PM/FM) synthesizer voice with user-loadable wavetable and formant shaper. Macro controls (TIMBRE, COLOR, DENSITY, MOTION) provide expressive performance shaping with extensive CV modulation. Factory preset bank included.
-
-📖 **[Full Manual](docs/phaseon1-manual.md)**
-
-### Xenostasis
-Autonomous hybrid synthesis organism. Self-regulating spectral drone combining wavetable oscillation with organic bytebeat cross-modulation and an internal metabolic feedback system.
 
 ### FerroKlast
 Eight-lane hybrid FM percussion synth for kick, dual snares, hats, ride, clap, and rim with dedicated wet reverb outputs and groove CV.
@@ -58,6 +40,8 @@ Eight-lane hybrid FM percussion synth for kick, dual snares, hats, ride, clap, a
 
 ### FerroKlast MM
 MetaModule-focused FerroKlast variant with a reduced voice set and trimmed feature surface.
+
+📖 **Reference: [FerroKlast Manual](docs/ferroklast-manual.md)** — shared percussion architecture and control concepts.
 
 ### Glitch Please
 IDUM-derived gate and clock processor based on Eli Pechman and Mystic Circuits firmware. Applies probabilistic timing and trigger modifications, loop capture, merge policies, and ghost-note timing to an incoming clock and four trigger lanes.
@@ -68,6 +52,36 @@ IDUM-derived gate and clock processor based on Eli Pechman and Mystic Circuits f
 Eight-zone comparator network with state outputs marking which zone a signal occupies and transition pulses for boundary crossings. Secondary Span 2 input warps zone boundaries for rhythmic variation, with optional clock-synced sampling and three CV output modes.
 
 📖 **[Full Manual](docs/kinetrax-manual.md)**
+
+### Minimalith
+Compact PreenFM2-based FM synth voice with bank loading and CV modulation.
+
+📖 **[Full Manual](docs/minimalith-manual.md)**
+
+### Phaseon1
+4-operator phase modulation synth voice with user-loadable wavetable and formant shaping. Macro controls for timbre, color, density, and motion provide broad performance shaping with extensive CV modulation.
+
+📖 **[Full Manual](docs/phaseon1-manual.md)**
+
+### Septagon
+Polyrhythmic drum pattern generator in 7/4 with phase-space warping, accent layers, and independent trigger density per voice.
+
+📖 **[Full Manual](docs/septagon-manual.md)**
+
+### SlideWyrm
+Generative TB-303-style acid sequencer with pitch, gate, slide, accent, and pattern-variation handling.
+
+📖 **[Full Manual](docs/slidewyrm-manual.md)**
+
+### Trigonomicon
+Generative drum trigger pattern generator for IDM, breakcore, amen-break, and drill-inspired rhythmic structures, with probability-weighted mutation and clock-synced CV outputs.
+
+📖 **[Full Manual](docs/trigonomicon-manual.md)**
+
+### Xenostasis
+Autonomous hybrid synthesis organism combining wavetable motion, bytebeat cross-modulation, and an internal metabolic feedback system.
+
+📖 **[Full Manual](docs/xenostasis-manual.md)**
 
 ### XORnado
 Compact bytebeat and digital-noise voice with 24 equations, smooth equation morphing, external clock reset or step control, PM/FM mutation, and mono plus adjacent-equation stereo outputs.
