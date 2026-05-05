@@ -116,6 +116,10 @@ This plugin incorporates portions of code from third-party open-source projects.
 
 | Component | Source | License |
 |-----------|--------|---------|
+
+Buy me coffee (if you liked something and would like to support me): [url=https://buymeacoffee.com/vurt]
+[img]https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png[/img]
+[/url]
 | TIMBRE & COLOR macros (Phaseon1) | [Mutable Instruments Plaits](https://github.com/pichenettes/eurorack) — Copyright (c) 2021 Emilie Gillet. | MIT |
 | Quantizer scale tables (SlideWyrm) | [Mutable Instruments Braids](https://github.com/pichenettes/eurorack) / [Ornament & Crime](https://github.com/mxmxmx/O_C) | MIT |
 | PreenFM2 synth engine (Minimalith) | [PreenFM2](https://github.com/Ixox/preenfm2) — Xavier Hosxe | GPL-3.0 |
